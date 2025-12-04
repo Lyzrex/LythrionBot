@@ -81,4 +81,8 @@ public class DatabaseManager {
     public String getUser() {
         return user;
     }
+
+    public long ping() {
+        return 0;
+    }
 }

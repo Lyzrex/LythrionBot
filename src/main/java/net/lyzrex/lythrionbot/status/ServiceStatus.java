@@ -1,5 +1,7 @@
 package net.lyzrex.lythrionbot.status;
 
+import net.lyzrex.lythrionbot.ServiceType;
+
 public class ServiceStatus {
 
     private final ServiceType type;

@@ -4,6 +4,8 @@ import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.lyzrex.lythrionbot.ConfigManager;
+import net.lyzrex.lythrionbot.ServiceType;
 import org.json.JSONObject;
 
 import java.net.URI;
@@ -12,156 +14,168 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
+/**
+ * Kümmert sich um:
+ *  - HTTP-Abfragen (Velocity / Lobby / Citybuild)
+ *  - Caching dieser Abfragen
+ *  - Erzeugen des Status-Embeds für /status
+ *  - Aktualisieren der Bot-Presence
+ *  - API-Ping für /latency
+ */
 public class StatusService {
 
-    private static final String MAIN_IP = "lythrion.net";
-    private static final String MCSTATUS_URL = "https://api.mcstatus.io/v2/status/java/" + MAIN_IP;
+    private static final long CACHE_TTL_MS = 15_000L; // 15s
 
-    private static final String LOBBY_URL =
-            "http://138.201.19.210:8765/status?token=ServiceLobbyStatus";
-    private static final String CITYBUILD_URL =
-            "http://138.201.19.210:8766/status?token=ServiceCBStatus";
-
-    private final HttpClient httpClient;
+    private final HttpClient http;
     private final MaintenanceManager maintenanceManager;
 
-    public record StatusTriple(ServiceStatus main, ServiceStatus lobby, ServiceStatus citybuild) {
-    }
+    // einfacher Cache pro Service
+    private volatile CacheEntry mainCache;
+    private volatile CacheEntry lobbyCache;
+    private volatile CacheEntry citybuildCache;
+
+    private final DateTimeFormatter tsFormatter =
+            DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm").withZone(ZoneId.systemDefault());
+
+    private record CacheEntry(ServiceStatus status, long timestamp) {}
 
     public StatusService(MaintenanceManager maintenanceManager) {
         this.maintenanceManager = maintenanceManager;
-        this.httpClient = HttpClient.newBuilder()
+        this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
     }
 
-    // ------------------------------------------------------------------------
-    // Fetch
-    // ------------------------------------------------------------------------
+    // ========================================================================
+    // Öffentliche API
+    // ========================================================================
 
-    public StatusTriple fetchAllFast() {
-        ServiceStatus main = fetchMainStatus();
-        ServiceStatus lobby = fetchServiceStatus(net.lyzrex.lythrionbot.status.ServiceType.LOBBY, LOBBY_URL);
-        ServiceStatus citybuild = fetchServiceStatus(net.lyzrex.lythrionbot.status.ServiceType.CITYBUILD, CITYBUILD_URL);
-        return new StatusTriple(main, lobby, citybuild);
-    }
-
-    private ServiceStatus fetchMainStatus() {
-        try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(MCSTATUS_URL))
-                    .timeout(Duration.ofSeconds(5))
-                    .GET()
-                    .build();
-
-            long start = System.nanoTime();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            long pingMs = (System.nanoTime() - start) / 1_000_000L;
-
-            if (response.statusCode() != 200) {
-                return new ServiceStatus(net.lyzrex.lythrionbot.status.ServiceType.MAIN, false, 0, 0, "Unknown", -1);
-            }
-
-            JSONObject json = new JSONObject(response.body());
-            boolean online = json.optBoolean("online", false);
-
-            int playersOnline = 0;
-            int playersMax = 0;
-            if (online && json.has("players")) {
-                JSONObject players = json.optJSONObject("players");
-                if (players != null) {
-                    playersOnline = players.optInt("online", 0);
-                    playersMax = players.optInt("max", 0);
-                }
-            }
-
-            String version = "Unknown";
-            if (online && json.has("version")) {
-                JSONObject ver = json.optJSONObject("version");
-                if (ver != null) {
-                    version = ver.optString("name_raw",
-                            ver.optString("name", "Unknown"));
-                }
-            }
-
-            // clamp main ping visually to 2–23ms as gewünscht
-            if (pingMs < 2) pingMs = 2;
-            if (pingMs > 23) pingMs = 23;
-
-            return new ServiceStatus(net.lyzrex.lythrionbot.status.ServiceType.MAIN, online, playersOnline, playersMax, version, pingMs);
-        } catch (Exception e) {
-            System.err.println("[StatusService] Failed to fetch main status: " + e.getMessage());
-            return new ServiceStatus(net.lyzrex.lythrionbot.status.ServiceType.MAIN, false, 0, 0, "Unknown", -1);
+    public ServiceStatus fetchMainStatus() {
+        long now = System.currentTimeMillis();
+        CacheEntry cache = mainCache;
+        if (cache != null && now - cache.timestamp <= CACHE_TTL_MS) {
+            return cache.status;
         }
+        ServiceStatus fresh = doFetchMainStatus();
+        mainCache = new CacheEntry(fresh, now);
+        return fresh;
     }
 
-    private ServiceStatus fetchServiceStatus(net.lyzrex.lythrionbot.status.ServiceType type, String url) {
+    public ServiceStatus fetchLobbyStatus() {
+        long now = System.currentTimeMillis();
+        CacheEntry cache = lobbyCache;
+        if (cache != null && now - cache.timestamp <= CACHE_TTL_MS) {
+            return cache.status;
+        }
+        ServiceStatus fresh = fetchLythCoreStatus(
+                ServiceType.LOBBY,
+                ConfigManager.getString(
+                        "status.lobby_url",
+                        "http://138.201.19.210:8765/status?token=ServiceLobbyStatus"
+                )
+        );
+        lobbyCache = new CacheEntry(fresh, now);
+        return fresh;
+    }
+
+    public ServiceStatus fetchCitybuildStatus() {
+        long now = System.currentTimeMillis();
+        CacheEntry cache = citybuildCache;
+        if (cache != null && now - cache.timestamp <= CACHE_TTL_MS) {
+            return cache.status;
+        }
+        ServiceStatus fresh = fetchLythCoreStatus(
+                ServiceType.CITYBUILD,
+                ConfigManager.getString(
+                        "status.citybuild_url",
+                        "http://138.201.19.210:8766/status?token=ServiceCBStatus"
+                )
+        );
+        citybuildCache = new CacheEntry(fresh, now);
+        return fresh;
+    }
+
+    /**
+     * Wird von /latency verwendet: pingt deine Status-API.
+     * Standard: Lobby-Endpoint, kann über config.yml überschrieben werden.
+     *
+     * @return Ping in ms oder -1 bei Fehler
+     */
+    public long pingStatusApi() {
+        String url = ConfigManager.getString(
+                "status.api_ping_url",
+                ConfigManager.getString(
+                        "status.lobby_url",
+                        "http://138.201.19.210:8765/status?token=ServiceLobbyStatus"
+                )
+        );
+
         try {
-            HttpRequest request = HttpRequest.newBuilder()
+            long start = System.currentTimeMillis();
+            HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(5))
+                    .timeout(Duration.ofSeconds(3))
                     .GET()
                     .build();
 
-            long start = System.nanoTime();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            long pingMs = (System.nanoTime() - start) / 1_000_000L;
+            HttpResponse<Void> res = http.send(req, HttpResponse.BodyHandlers.discarding());
+            long ping = System.currentTimeMillis() - start;
 
-            boolean online = response.statusCode() == 200;
-            int playersOnline = 0;
-            int playersMax = 0;
-            String version = "Unknown";
-
-            if (online) {
-                JSONObject json = new JSONObject(response.body());
-                online = json.optBoolean("online", online);
-
-                if (json.has("players")) {
-                    JSONObject players = json.optJSONObject("players");
-                    if (players != null) {
-                        playersOnline = players.optInt("online", 0);
-                        playersMax = players.optInt("max", 0);
-                    }
-                }
-
-                version = json.optString("version", "Unknown");
+            if (res.statusCode() >= 200 && res.statusCode() < 500) {
+                return ping;
             }
-
-            return new ServiceStatus(type, online, playersOnline, playersMax, version, pingMs);
-        } catch (Exception e) {
-            System.err.println("[StatusService] Failed to fetch service status (" + type + "): " + e.getMessage());
-            return new ServiceStatus(type, false, 0, 0, "Unknown", -1);
+            return -1L;
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            return -1L;
         }
     }
 
-    public long pingApi(String url) {
-        try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(5))
-                    .GET()
-                    .build();
+    /**
+     * Baut das große Network-Status-Embed für /status.
+     */
+    public MessageEmbed buildStatusEmbed(ServiceStatus main,
+                                         ServiceStatus lobby,
+                                         ServiceStatus citybuild) {
 
-            long start = System.nanoTime();
-            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-            long pingMs = (System.nanoTime() - start) / 1_000_000L;
+        String lastCheck = tsFormatter.format(Instant.now());
 
-            if (response.statusCode() != 200) return -1;
-            return pingMs;
-        } catch (Exception e) {
-            return -1;
+        boolean mainMaint = maintenanceManager.isMaintenance(ServiceType.MAIN);
+        boolean lobbyMaint = maintenanceManager.isMaintenance(ServiceType.LOBBY);
+        boolean cbMaint   = maintenanceManager.isMaintenance(ServiceType.CITYBUILD);
+
+        String mainStatusLabel = statusLabel(main.isOnline(), mainMaint);
+        String lobbyStatusLabel = statusLabel(lobby.isOnline(), lobbyMaint);
+        String cbStatusLabel = statusLabel(citybuild.isOnline(), cbMaint);
+
+        int mainUptime = calcUptimePercent(main.isOnline(), mainMaint);
+        int lobbyUptime = calcUptimePercent(lobby.isOnline(), lobbyMaint);
+        int cbUptime = calcUptimePercent(citybuild.isOnline(), cbMaint);
+
+        int onlineCount = 0;
+        int maintenanceCount = 0;
+        int offlineCount = 0;
+
+        for (String label : new String[]{mainStatusLabel, lobbyStatusLabel, cbStatusLabel}) {
+            if (label.startsWith("🟢")) onlineCount++;
+            else if (label.startsWith("🟠")) maintenanceCount++;
+            else if (label.startsWith("🔴")) offlineCount++;
         }
-    }
 
-    // ------------------------------------------------------------------------
-    // Presence
-    // ------------------------------------------------------------------------
+        String healthLabel = "🟢 Stable";
+        String healthText = "All core services are online.";
+        if (offlineCount > 0) {
+            healthLabel = "🔴 Critical";
+            healthText = "One or more core services are unavailable.";
+        } else if (maintenanceCount > 0) {
+            healthLabel = "🟠 Degraded";
+            healthText = "Maintenance in progress on at least one service.";
+        }
 
-    public void updatePresenceFromData(JDA jda,
-                                       ServiceStatus main,
-                                       ServiceStatus lobby,
-                                       ServiceStatus citybuild) {
+        // Network load (keine Doppelzählung)
         int totalOnline;
         int totalMax;
 
@@ -169,137 +183,90 @@ public class StatusService {
             totalOnline = main.getPlayersOnline();
             totalMax = main.getPlayersMax();
         } else {
-            totalOnline =
-                    (lobby.isOnline() ? lobby.getPlayersOnline() : 0) +
-                            (citybuild.isOnline() ? citybuild.getPlayersOnline() : 0);
-            totalMax =
-                    (lobby.isOnline() ? lobby.getPlayersMax() : 0) +
-                            (citybuild.isOnline() ? citybuild.getPlayersMax() : 0);
-        }
-
-        String presenceText;
-        if (totalMax > 0) {
-            presenceText = "on Lythrion.net (" + totalOnline + " of " + totalMax + ")";
-        } else {
-            presenceText = "on Lythrion.net";
-        }
-
-        jda.getPresence().setActivity(Activity.playing(presenceText));
-    }
-
-    // ------------------------------------------------------------------------
-    // Embed
-    // ------------------------------------------------------------------------
-
-    public MessageEmbed buildStatusEmbed(ServiceStatus main,
-                                         ServiceStatus lobby,
-                                         ServiceStatus citybuild) {
-
-        String lastCheck = formatTimestamp();
-
-        // service states with maintenance
-        ServiceView mainView = toServiceView(main, maintenanceManager.isMaintenance(net.lyzrex.lythrionbot.status.ServiceType.MAIN));
-        ServiceView lobbyView = toServiceView(lobby, maintenanceManager.isMaintenance(net.lyzrex.lythrionbot.status.ServiceType.LOBBY));
-        ServiceView cbView = toServiceView(citybuild, maintenanceManager.isMaintenance(net.lyzrex.lythrionbot.status.ServiceType.CITYBUILD));
-
-        int offlineCount =
-                (mainView.state.equals("offline") ? 1 : 0) +
-                        (lobbyView.state.equals("offline") ? 1 : 0) +
-                        (cbView.state.equals("offline") ? 1 : 0);
-
-        int maintCount =
-                (mainView.state.equals("maintenance") ? 1 : 0) +
-                        (lobbyView.state.equals("maintenance") ? 1 : 0) +
-                        (cbView.state.equals("maintenance") ? 1 : 0);
-
-        String healthLabel = "🟢 Stable";
-        String healthText = "All core services are online.";
-        int color = 0x22c55e;
-        if (offlineCount > 0) {
-            healthLabel = "🔴 Critical";
-            healthText = "One or more core services are currently unavailable.";
-            color = 0xef4444;
-        } else if (maintCount > 0) {
-            healthLabel = "🟠 Degraded";
-            healthText = "Maintenance is in progress on at least one core service.";
-            color = 0xfacc15;
-        }
-
-        // network load (no double count)
-        int totalOnline;
-        int totalMax;
-        if (mainView.state.equals("online") && main.getPlayersMax() > 0) {
-            totalOnline = main.getPlayersOnline();
-            totalMax = main.getPlayersMax();
-        } else {
-            totalOnline =
-                    (lobbyView.state.equals("online") ? lobby.getPlayersOnline() : 0) +
-                            (cbView.state.equals("online") ? citybuild.getPlayersOnline() : 0);
-            totalMax =
-                    (lobbyView.state.equals("online") ? lobby.getPlayersMax() : 0) +
-                            (cbView.state.equals("online") ? citybuild.getPlayersMax() : 0);
+            totalOnline = 0;
+            totalMax = 0;
+            if (lobby.isOnline()) {
+                totalOnline += lobby.getPlayersOnline();
+                totalMax += lobby.getPlayersMax();
+            }
+            if (citybuild.isOnline()) {
+                totalOnline += citybuild.getPlayersOnline();
+                totalMax += citybuild.getPlayersMax();
+            }
         }
 
         int loadPercent = 0;
         if (totalMax > 0) {
-            loadPercent = Math.toIntExact(Math.max(0, Math.min(100,
-                    Math.round((totalOnline / (double) totalMax) * 100))));
+            loadPercent = clampPercent(Math.round(totalOnline * 100f / totalMax));
         }
+
         String loadBar = buildLoadBar(loadPercent);
         String playabilityLabel = buildPlayabilityLabel(healthLabel, loadPercent);
 
-        // per-service latency labels
-        String mainLatency = buildLatencyLabel(main.getPingMs());
-        String lobbyLatency = buildLatencyLabel(lobby.getPingMs());
-        String cbLatency = buildLatencyLabel(citybuild.getPingMs());
+        String mainLatencyLabel = buildLatencyLabel(main.getPingMs());
+        String lobbyLatencyLabel = buildLatencyLabel(lobby.getPingMs());
+        String cbLatencyLabel = buildLatencyLabel(citybuild.getPingMs());
 
-        String mainPing = main.getPingMs() >= 0 ? main.getPingMs() + "ms" : "N/A";
-        String lobbyPing = lobby.getPingMs() >= 0 ? lobby.getPingMs() + "ms" : "N/A";
-        String cbPing = citybuild.getPingMs() >= 0 ? citybuild.getPingMs() + "ms" : "N/A";
+        String mainLoadLabel = buildServiceLoadLabel(main.isOnline(), main.getPlayersOnline(), main.getPlayersMax());
+        String lobbyLoadLabel = buildServiceLoadLabel(lobby.isOnline(), lobby.getPlayersOnline(), lobby.getPlayersMax());
+        String cbLoadLabel = buildServiceLoadLabel(citybuild.isOnline(), citybuild.getPlayersOnline(), citybuild.getPlayersMax());
+
+        int mainUptimePercent = mainUptime;
+        int lobbyUptimePercent = lobbyUptime;
+        int cbUptimePercent = cbUptime;
+
+        int networkColor = 0x22c55e; // green
+        if (offlineCount > 0) {
+            networkColor = 0xef4444; // red
+        } else if (maintenanceCount > 0) {
+            networkColor = 0xfacc15; // yellow
+        }
+
+        String mainPingText = main.getPingMs() >= 0 ? main.getPingMs() + "ms" : "N/A";
+        String lobbyPingText = lobby.getPingMs() >= 0 ? lobby.getPingMs() + "ms" : "N/A";
+        String cbPingText = citybuild.getPingMs() >= 0 ? citybuild.getPingMs() + "ms" : "N/A";
 
         String mainValue = String.join("\n",
                 "> **IP:** `Lythrion.net`",
-                "> **Status:** " + mainView.label,
+                "> **Status:** " + mainStatusLabel,
                 "> **Version:** `" + main.getVersion() + "`",
                 "> **Players:** " + (main.isOnline()
                         ? main.getPlayersOnline() + "/" + main.getPlayersMax()
                         : "0/0"),
-                "> **Ping:** " + mainPing + " • " + mainLatency,
-                "> **Load:** " + buildServiceLoadLabel(mainView.state.equals("online"),
-                        main.getPlayersOnline(), main.getPlayersMax()),
-                "> **Uptime:** " + mainView.uptime + "%",
-                "> " + buildUptimeBar(mainView.uptime)
+                "> **Ping:** " + mainPingText + " • " + mainLatencyLabel,
+                "> **Load:** " + mainLoadLabel,
+                "> **Uptime:** " + mainUptimePercent + "%",
+                "> " + buildUptimeBar(mainUptimePercent)
         );
 
         String lobbyValue = String.join("\n",
-                "> **Status:** " + lobbyView.label,
+                "> **Status:** " + lobbyStatusLabel,
                 "> **Version:** `" + lobby.getVersion() + "`",
                 "> **Players:** " + (lobby.isOnline()
                         ? lobby.getPlayersOnline() + "/" + lobby.getPlayersMax()
                         : "0/0"),
-                "> **Ping:** " + lobbyPing + " • " + lobbyLatency,
-                "> **Load:** " + buildServiceLoadLabel(lobbyView.state.equals("online"),
-                        lobby.getPlayersOnline(), lobby.getPlayersMax()),
-                "> **Uptime:** " + lobbyView.uptime + "%",
-                "> " + buildUptimeBar(lobbyView.uptime)
+                "> **Ping:** " + lobbyPingText + " • " + lobbyLatencyLabel,
+                "> **Load:** " + lobbyLoadLabel,
+                "> **Uptime:** " + lobbyUptimePercent + "%",
+                "> " + buildUptimeBar(lobbyUptimePercent)
         );
 
         String cbValue = String.join("\n",
-                "> **Status:** " + cbView.label,
+                "> **Status:** " + cbStatusLabel,
                 "> **Version:** `" + citybuild.getVersion() + "`",
                 "> **Players:** " + (citybuild.isOnline()
                         ? citybuild.getPlayersOnline() + "/" + citybuild.getPlayersMax()
                         : "0/0"),
-                "> **Ping:** " + cbPing + " • " + cbLatency,
-                "> **Load:** " + buildServiceLoadLabel(cbView.state.equals("online"),
-                        citybuild.getPlayersOnline(), citybuild.getPlayersMax()),
-                "> **Uptime:** " + cbView.uptime + "%",
-                "> " + buildUptimeBar(cbView.uptime)
+                "> **Ping:** " + cbPingText + " • " + cbLatencyLabel,
+                "> **Load:** " + cbLoadLabel,
+                "> **Uptime:** " + cbUptimePercent + "%",
+                "> " + buildUptimeBar(cbUptimePercent)
         );
 
         EmbedBuilder eb = new EmbedBuilder()
                 .setTitle("⚡ Lythrion Network Status")
-                .setColor(color)
+                .setColor(networkColor)
+                .setAuthor("Lythrion Monitoring", null, "https://api.mcstatus.io/v2/icon/lythrion.net")
                 .setThumbnail("https://api.mcstatus.io/v2/icon/lythrion.net")
                 .setDescription(String.join("\n",
                         "**Status Legend**",
@@ -328,7 +295,7 @@ public class StatusService {
                         ),
                         false
                 )
-                .addField("🚀 Velocity Core (Java Main)", mainValue, false)
+                .addField("🚀 Main Core (Velocity Java)", mainValue, false)
                 .addField("🏠 Lobby Service", lobbyValue, true)
                 .addField("🏙️ Citybuild Service", cbValue, true)
                 .setFooter("Lythrion Status Dashboard")
@@ -337,34 +304,195 @@ public class StatusService {
         return eb.build();
     }
 
-    // ------------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------------
+    /**
+     * Setzt die Rich Presence des Bots basierend auf den Statusdaten.
+     */
+    public void updatePresenceFromData(JDA jda,
+                                       ServiceStatus main,
+                                       ServiceStatus lobby,
+                                       ServiceStatus citybuild) {
 
-    private record ServiceView(String label, int uptime, String state) {
+        int totalOnline;
+        int totalMax;
+
+        if (main.isOnline() && main.getPlayersMax() > 0) {
+            totalOnline = main.getPlayersOnline();
+            totalMax = main.getPlayersMax();
+        } else {
+            totalOnline = 0;
+            totalMax = 0;
+            if (lobby.isOnline()) {
+                totalOnline += lobby.getPlayersOnline();
+                totalMax += lobby.getPlayersMax();
+            }
+            if (citybuild.isOnline()) {
+                totalOnline += citybuild.getPlayersOnline();
+                totalMax += citybuild.getPlayersMax();
+            }
+        }
+
+        String presence;
+        if (totalMax > 0) {
+            presence = "Playing on Lythrion.net (" + totalOnline + "/" + totalMax + ")";
+        } else if (main.isOnline() || lobby.isOnline() || citybuild.isOnline()) {
+            presence = "Playing on Lythrion.net (online)";
+        } else {
+            presence = "Lythrion.net (offline)";
+        }
+
+        jda.getPresence().setActivity(Activity.playing(presence));
     }
 
-    private ServiceView toServiceView(ServiceStatus status, boolean maintenance) {
-        if (maintenance) {
-            return new ServiceView("🟠 Maintenance", 75, "maintenance");
+    // ========================================================================
+    // Interne HTTP-Implementierungen
+    // ========================================================================
+
+    private ServiceStatus doFetchMainStatus() {
+        String ip = ConfigManager.getString("status.main_ip", "lythrion.net");
+        String type = ConfigManager.getString("status.main_type", "java");
+        String url = ConfigManager.getString(
+                "status.main_url",
+                "https://api.mcstatus.io/v2/status/" + type + "/" + ip
+        );
+
+        try {
+            long start = System.currentTimeMillis();
+
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+            long ping = System.currentTimeMillis() - start;
+
+            boolean online = res.statusCode() == 200;
+            int playersOnline = 0;
+            int playersMax = 0;
+            String version = "Unknown";
+
+            if (online) {
+                JSONObject json = new JSONObject(res.body());
+                online = json.optBoolean("online", false);
+
+                JSONObject playersObj = json.optJSONObject("players");
+                if (playersObj != null) {
+                    playersOnline = playersObj.optInt("online", 0);
+                    playersMax = playersObj.optInt("max", 0);
+                }
+
+                JSONObject verObj = json.optJSONObject("version");
+                if (verObj != null) {
+                    version = verObj.optString(
+                            "name_raw",
+                            verObj.optString("name", "Unknown")
+                    );
+                }
+            }
+
+            return new ServiceStatus(
+                    ServiceType.MAIN,
+                    online,
+                    playersOnline,
+                    playersMax,
+                    version,
+                    ping
+            );
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            return new ServiceStatus(
+                    ServiceType.MAIN,
+                    false,
+                    0,
+                    0,
+                    "Unknown",
+                    -1
+            );
         }
-        if (status.isOnline()) {
-            return new ServiceView("🟢 Online", 100, "online");
-        }
-        return new ServiceView("🔴 Offline", 0, "offline");
     }
 
-    private String formatTimestamp() {
-        Instant now = Instant.now();
-        return java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")
-                .withZone(java.time.ZoneId.systemDefault())
-                .format(now);
+    private ServiceStatus fetchLythCoreStatus(ServiceType type, String url) {
+        try {
+            long start = System.currentTimeMillis();
+
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+            long ping = System.currentTimeMillis() - start;
+
+            boolean online = res.statusCode() == 200;
+            int playersOnline = 0;
+            int playersMax = 0;
+            String version = "Unknown";
+
+            if (online) {
+                JSONObject json = new JSONObject(res.body());
+
+                online = json.optBoolean("online", online);
+
+                JSONObject playersObj = json.optJSONObject("players");
+                if (playersObj != null) {
+                    playersOnline = playersObj.optInt("online", 0);
+                    playersMax = playersObj.optInt("max", 0);
+                } else {
+                    playersOnline = json.optInt("playersOnline", 0);
+                    playersMax = json.optInt("playersMax", 0);
+                }
+
+                version = json.optString("version", version);
+            }
+
+            return new ServiceStatus(
+                    type,
+                    online,
+                    playersOnline,
+                    playersMax,
+                    version,
+                    ping
+            );
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            return new ServiceStatus(
+                    type,
+                    false,
+                    0,
+                    0,
+                    "Unknown",
+                    -1
+            );
+        }
+    }
+
+    // ========================================================================
+    // Helper-Methoden (Bar, Labels, etc.)
+    // ========================================================================
+
+    private String statusLabel(boolean online, boolean maintenance) {
+        if (maintenance) return "🟠 Maintenance";
+        return online ? "🟢 Online" : "🔴 Offline";
+    }
+
+    private int calcUptimePercent(boolean online, boolean maintenance) {
+        if (maintenance) return 75;
+        return online ? 100 : 0;
+    }
+
+    private int clampPercent(int p) {
+        if (p < 0) return 0;
+        if (p > 100) return 100;
+        return p;
     }
 
     private String buildUptimeBar(int percent) {
         int totalBlocks = 9;
-        int clamped = Math.max(0, Math.min(100, percent));
-        int filled = Math.max(0, Math.min(totalBlocks, Math.round(clamped / 9f)));
+        int clamped = clampPercent(percent);
+        int filled = Math.round(clamped / 100f * totalBlocks);
+
         String green = "🟩";
         String red = "🟥";
         return green.repeat(filled) + red.repeat(totalBlocks - filled);
@@ -372,29 +500,29 @@ public class StatusService {
 
     private String buildLoadBar(int percent) {
         int totalBlocks = 9;
-        int clamped = Math.max(0, Math.min(100, percent));
-        int redBlocks = Math.max(0, Math.min(totalBlocks, Math.round(clamped / 9f)));
+        int clamped = clampPercent(percent);
+        int redBlocks = Math.round(clamped / 100f * totalBlocks);
         int greenBlocks = totalBlocks - redBlocks;
+
         String green = "🟩";
         String red = "🟥";
         return green.repeat(greenBlocks) + red.repeat(redBlocks);
     }
 
-    private String buildLatencyLabel(long pingMs) {
-        if (pingMs < 0) return "Unknown";
-        if (pingMs <= 60) return "⚡ Stable";
-        if (pingMs <= 120) return "⭐ Playable";
+    private String buildLatencyLabel(long ping) {
+        if (ping < 0) return "Unknown";
+        if (ping <= 60) return "⚡ Stable";
+        if (ping <= 120) return "⭐ Playable";
         return "🐢 High latency";
     }
 
     private String buildServiceLoadLabel(boolean online, int playersOnline, int playersMax) {
         if (!online || playersMax <= 0) return "N/A";
-        double percent = (playersOnline / (double) playersMax) * 100.0;
-        int p = (int) Math.round(percent);
-        if (percent <= 40) return "Low (" + p + "%)";
-        if (percent <= 70) return "Medium (" + p + "%)";
-        if (percent <= 90) return "High (" + p + "%)";
-        return "Critical (" + p + "%)";
+        int percent = clampPercent(Math.round(playersOnline * 100f / playersMax));
+        if (percent <= 40) return "Low (" + percent + "%)";
+        if (percent <= 70) return "Medium (" + percent + "%)";
+        if (percent <= 90) return "High (" + percent + "%)";
+        return "Critical (" + percent + "%)";
     }
 
     private String buildPlayabilityLabel(String healthLabel, int loadPercent) {

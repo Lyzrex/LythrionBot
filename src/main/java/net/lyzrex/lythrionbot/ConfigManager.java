@@ -8,12 +8,7 @@ import java.io.FileWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
-/**
- * Very small YAML config loader.
- *
- * Loads/creates config.yml in the working directory.
- * All default texts are English.
- */
+
 public final class ConfigManager {
 
     private static Map<String, Object> root;

@@ -53,4 +53,8 @@ public class UserProfile {
     public boolean isDebugEnabled() {
         return debugEnabled;
     }
+
+    public long getPlaytimeSeconds() {
+        return 0;
+    }
 }

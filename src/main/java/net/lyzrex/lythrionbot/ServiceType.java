@@ -1,4 +1,4 @@
-package net.lyzrex.lythrionbot.status;
+package net.lyzrex.lythrionbot;
 
 public enum ServiceType {
     MAIN,
