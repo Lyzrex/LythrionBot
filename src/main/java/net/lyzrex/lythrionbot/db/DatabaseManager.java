@@ -83,6 +83,14 @@ public class DatabaseManager {
     }
 
     public long ping() {
-        return 0;
+        long start = System.currentTimeMillis();
+        try (Connection con = getConnection();
+             var ps = con.prepareStatement("SELECT 1")) {
+            ps.execute();
+            return System.currentTimeMillis() - start;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return -1L;
+        }
     }
 }

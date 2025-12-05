@@ -31,7 +31,7 @@ public final class ConfigManager {
     private static void writeDefaultConfig(File file) throws Exception {
         String yaml = """
                 bot:
-                  version: "0.0.1-beta0.1"
+                  version: "0.0.2-beta1.13"
 
                 network:
                   name: "Lythrion Network"
@@ -46,6 +46,11 @@ public final class ConfigManager {
                   main: false
                   lobby: false
                   citybuild: false
+
+
+                murmelapi:
+                  base_url: "https://murmelmeister.github.io/MurmelAPI"
+                  health_path: "/health"
 
                 tickets:
                   categoryId: "0"

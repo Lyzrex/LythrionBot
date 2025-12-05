@@ -12,6 +12,7 @@ import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.lyzrex.lythrionbot.command.SlashCommandListener;
 import net.lyzrex.lythrionbot.db.DatabaseManager;
+import net.lyzrex.lythrionbot.murmel.MurmelApiClient;
 import net.lyzrex.lythrionbot.game.GameScoreRepository;
 import net.lyzrex.lythrionbot.game.GameService;
 import net.lyzrex.lythrionbot.i18n.Messages;
@@ -47,7 +48,7 @@ public final class LythrionBot {
         boolean lobbyMaint = ConfigManager.getBoolean("maintenance.lobby", false);
         boolean cbMaint = ConfigManager.getBoolean("maintenance.citybuild", false);
 
-        MaintenanceManager maintenanceManager = new MaintenanceManager(mainMaint, lobbyMaint, cbMaint);
+        MaintenanceManager maintenanceManager = new MaintenanceManager();
 
         // ---- Services ----
         StatusService statusService = new StatusService(maintenanceManager);
@@ -55,10 +56,11 @@ public final class LythrionBot {
 
         GameScoreRepository gameScoreRepo = new GameScoreRepository(databaseManager);
         GameService gameService = new GameService(gameScoreRepo);
+        MurmelApiClient murmelApiClient = new MurmelApiClient();
 
-        String ticketCategoryId = ConfigManager.getString("tickets.category_id", "0");
-        String ticketStaffRoleId = ConfigManager.getString("tickets.staff_role_id", "0");
-        String ticketLogChannelId = ConfigManager.getString("tickets.log_channel_id", "0");
+        String ticketCategoryId = ConfigManager.getString("tickets.categoryId", "0");
+        String ticketStaffRoleId = ConfigManager.getString("tickets.staffRoleId", "0");
+        String ticketLogChannelId = ConfigManager.getString("tickets.logChannelId", "0");
 
         TicketService ticketService = new TicketService(
                 ticketCategoryId,
@@ -104,6 +106,9 @@ public final class LythrionBot {
 
         CommandData latencyCmd = Commands.slash("latency", "Show gateway, database and API latency");
 
+        CommandData pingCmd = Commands.slash("ping", "Quick ping with bot, DB and MurmelAPI details");
+        CommandData helpCmd = Commands.slash("help", "Displays a help overview");
+
         CommandData ticketPanelCmd = Commands.slash("ticketpanel", "Post the ticket panel message (admin only)");
 
         CommandData rpsCmd = Commands.slash("rps", "Rock Paper Scissors")
@@ -119,6 +124,34 @@ public final class LythrionBot {
                         new SubcommandData("top", "Show the RPS leaderboard")
                 );
 
+        CommandData moderationCmd = Commands.slash("moderation", "Moderation commands")
+                .addSubcommands(
+                        new SubcommandData("ban", "Ban a member")
+                                .addOptions(
+                                        new OptionData(OptionType.USER, "user", "Target user", true),
+                                        new OptionData(OptionType.STRING, "reason", "Reason", false),
+                                        new OptionData(OptionType.INTEGER, "delete_days", "Delete messages from the past N days", false)
+                                                .setMinValue(0)
+                                                .setMaxValue(7)
+                                ),
+                        new SubcommandData("kick", "Kick a member")
+                                .addOptions(
+                                        new OptionData(OptionType.USER, "user", "Target user", true),
+                                        new OptionData(OptionType.STRING, "reason", "Reason", false)
+                                ),
+                        new SubcommandData("timeout", "Timeout a member")
+                                .addOptions(
+                                        new OptionData(OptionType.USER, "user", "Target user", true),
+                                        new OptionData(OptionType.INTEGER, "minutes", "Timeout duration in minutes", true),
+                                        new OptionData(OptionType.STRING, "reason", "Reason", false)
+                                ),
+                        new SubcommandData("unban", "Remove a ban by user ID")
+                                .addOptions(
+                                        new OptionData(OptionType.STRING, "user_id", "ID of the user to unban", true)
+                                )
+                );
+
+
         jda.updateCommands()
                 .addCommands(
                         statusCmd,
@@ -126,8 +159,11 @@ public final class LythrionBot {
                         botInfoCmd,
                         profileCmd,
                         latencyCmd,
+                        pingCmd,
+                        helpCmd,
                         ticketPanelCmd,
-                        rpsCmd
+                        rpsCmd,
+                        moderationCmd
                 )
                 .queue();
 
@@ -136,10 +172,11 @@ public final class LythrionBot {
                 jda,
                 statusService,
                 maintenanceManager,
-                userRepo,
                 ticketService,
+                userRepo,
+                gameService,
                 databaseManager,
-                gameService
+                murmelApiClient
         ));
 
         System.out.println("Lythrion main bot is running.");

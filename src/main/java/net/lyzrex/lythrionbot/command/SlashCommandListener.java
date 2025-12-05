@@ -4,34 +4,37 @@ import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Member;
-import net.dv8tion.jda.api.entities.MessageEmbed;
-import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.component.StringSelectInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.lyzrex.lythrionbot.ConfigManager;
 import net.lyzrex.lythrionbot.db.DatabaseManager;
-import net.lyzrex.lythrionbot.i18n.Messages;
+import net.lyzrex.lythrionbot.game.GameService;
+import net.lyzrex.lythrionbot.murmel.MurmelApiClient;
+import net.lyzrex.lythrionbot.murmel.MurmelApiStatus;
 import net.lyzrex.lythrionbot.profile.UserProfile;
 import net.lyzrex.lythrionbot.profile.UserProfileRepository;
 import net.lyzrex.lythrionbot.status.MaintenanceManager;
 import net.lyzrex.lythrionbot.status.ServiceStatus;
 import net.lyzrex.lythrionbot.status.StatusService;
 import net.lyzrex.lythrionbot.ticket.TicketService;
-import net.lyzrex.lythrionbot.game.GameScoreRepository;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.Optional;
-import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Haupt-Listener für alle Slash-Commands:
- * /status, /maintenance, /botinfo, /latency, /ticketpanel, /profile, /game
+ * Vollständige Implementierung des Slash-Command-Listeners. Enthält alle
+ * registrierten Kommandos (Utility, Netzwerk, Profile, Spiele, Moderation)
+ * und die MurmelAPI-Integration in einem einzigen Einstiegspunkt:
+ * /status, /maintenance, /botinfo, /latency, /ping, /help, /ticketpanel,
+ * /profile, /rps, /moderation.
  */
 public class SlashCommandListener extends ListenerAdapter {
 
@@ -40,24 +43,26 @@ public class SlashCommandListener extends ListenerAdapter {
     private final MaintenanceManager maintenanceManager;
     private final TicketService ticketService;
     private final UserProfileRepository userRepo;
-    private final GameScoreRepository gameRepo;
+    private final GameService gameService;
     private final DatabaseManager databaseManager;
-    private final Random random = new Random();
+    private final MurmelApiClient murmelApiClient;
 
     public SlashCommandListener(JDA jda,
                                 StatusService statusService,
                                 MaintenanceManager maintenanceManager,
                                 TicketService ticketService,
                                 UserProfileRepository userRepo,
-                                GameScoreRepository gameRepo,
-                                DatabaseManager databaseManager) {
+                                GameService gameService,
+                                DatabaseManager databaseManager,
+                                MurmelApiClient murmelApiClient) {
         this.jda = jda;
         this.statusService = statusService;
         this.maintenanceManager = maintenanceManager;
         this.ticketService = ticketService;
         this.userRepo = userRepo;
-        this.gameRepo = gameRepo;
+        this.gameService = gameService;
         this.databaseManager = databaseManager;
+        this.murmelApiClient = murmelApiClient;
     }
 
     @Override
@@ -71,9 +76,12 @@ public class SlashCommandListener extends ListenerAdapter {
             case "maintenance" -> handleMaintenance(event, admin, member);
             case "botinfo" -> handleBotInfo(event, admin, member);
             case "latency" -> handleLatency(event, admin, member);
+            case "ping" -> handlePing(event, admin, member);
+            case "help" -> handleHelp(event);
+            case "moderation" -> handleModeration(event, admin, member);
             case "ticketpanel" -> handleTicketPanel(event, admin);
             case "profile" -> handleProfile(event, admin);
-            case "game" -> handleGame(event);
+            case "rps" -> handleRps(event);
             default -> {
                 // ignore unknown
             }
@@ -88,7 +96,6 @@ public class SlashCommandListener extends ListenerAdapter {
         long start = System.currentTimeMillis();
         event.deferReply().queue();
 
-        // HTTP-Abfragen parallel holen
         CompletableFuture<ServiceStatus> mainFuture =
                 CompletableFuture.supplyAsync(statusService::fetchMainStatus);
         CompletableFuture<ServiceStatus> lobbyFuture =
@@ -111,7 +118,7 @@ public class SlashCommandListener extends ListenerAdapter {
                     ServiceStatus citybuild = cbFuture.join();
 
                     statusService.updatePresenceFromData(jda, main, lobby, citybuild);
-                    MessageEmbed embed = statusService.buildStatusEmbed(main, lobby, citybuild);
+                    var embed = statusService.buildStatusEmbed(main, lobby, citybuild);
 
                     long dur = System.currentTimeMillis() - start;
                     event.getHook().editOriginalEmbeds(embed).queue();
@@ -172,8 +179,17 @@ public class SlashCommandListener extends ListenerAdapter {
             return;
         }
 
-        String service = event.getOption("service").getAsString();
-        boolean enabled = event.getOption("enabled").getAsBoolean();
+        OptionMapping serviceOpt = event.getOption("service");
+        OptionMapping enabledOpt = event.getOption("enabled");
+
+        if (serviceOpt == null || enabledOpt == null) {
+            event.reply("❌ Missing required options `service` or `enabled`.")
+                    .setEphemeral(true).queue();
+            return;
+        }
+
+        String service = serviceOpt.getAsString();
+        boolean enabled = enabledOpt.getAsBoolean();
 
         switch (service) {
             case "main" -> maintenanceManager.setMain(enabled);
@@ -224,8 +240,9 @@ public class SlashCommandListener extends ListenerAdapter {
     private void handleBotInfo(SlashCommandInteractionEvent event,
                                boolean admin,
                                Member member) {
-
         long start = System.currentTimeMillis();
+
+        event.deferReply(true).queue();
 
         long wsPing = jda.getGatewayPing();
         RuntimeMXBean runtime = ManagementFactory.getRuntimeMXBean();
@@ -249,65 +266,78 @@ public class SlashCommandListener extends ListenerAdapter {
         long usedMem = rt.totalMemory() - rt.freeMemory();
         String memText = String.format("Used: %.1f MB", usedMem / 1024.0 / 1024.0);
 
-        // DB-Ping (MurmelAPI DB)
-        long murmelPing = -1;
-        try {
-            murmelPing = databaseManager.ping();
-        } catch (Exception ignored) {}
+        murmelApiClient.checkHealthAsync()
+                .completeOnTimeout(new MurmelApiStatus(false, -1L, 0, "MurmelAPI health check timed out"), 7, TimeUnit.SECONDS)
+                .whenComplete((murmelStatus, throwable) -> {
+                    MurmelApiStatus status = throwable == null ? murmelStatus
+                            : new MurmelApiStatus(false, -1L, 0, "MurmelAPI request failed");
 
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("🛰️ " + networkName + " Bot")
-                .setColor(0x00bcd4)
-                .setThumbnail(iconUrl)
-                .setDescription("**Bot by Lyzrex**\n" +
-                        "Discord: " + discordLink)
-                .addField(
-                        "🤖 Bot",
-                        String.join("\n",
-                                "• **Version:** `" + botVersion + "`",
-                                "• **Guilds:** " + guildCount,
-                                "• **Commands:** `/status`, `/maintenance`, `/botinfo`, `/latency`, `/ticketpanel`, `/profile`, `/game`"
-                        ),
-                        false
-                )
-                .addField(
-                        "📡 Runtime",
-                        String.join("\n",
-                                "• **Gateway ping:** " + wsPing + "ms",
-                                "• **Uptime:** " + uptimeText,
-                                "• **Java:** " + System.getProperty("java.version"),
-                                "• **Memory:** " + memText
-                        ),
-                        false
-                )
-                .addField(
-                        "🗄️ MurmelAPI",
-                        "• **DB ping:** " + (murmelPing >= 0 ? murmelPing + "ms" : "N/A") + "\n" +
-                                "_(replace with real MurmelAPI call if you expose one)_",
-                        false
-                )
-                .addField(
-                        "🌐 Lythrion Network",
-                        String.join("\n",
-                                "• **Name:** " + networkName,
-                                "• **IP:** `" + networkIp + "`",
-                                "• **Status overview:** `/status`"
-                        ),
-                        false
-                )
-                .setFooter("Bot by Lyzrex • " + networkName)
-                .setTimestamp(Instant.now());
+                    String murmelDetails = String.join("\n",
+                            "• Endpoint: " + murmelApiClient.getHealthUrl(),
+                            "• " + status.describe(),
+                            "• Repo: https://github.com/Murmelmeister/MurmelAPI",
+                            "• Author: Murmelmeister / PyjamaMurmeli"
+                    );
 
-        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
+                    EmbedBuilder eb = new EmbedBuilder()
+                            .setTitle("🛰️ " + networkName + " Bot")
+                            .setColor(0x00bcd4)
+                            .setThumbnail(iconUrl)
+                            .setDescription("**Bot by Lyzrex**\n" +
+                                    "Discord: " + discordLink)
+                            .addField(
+                                    "🤖 Bot",
+                                    String.join("\n",
+                                            "• **Version:** `" + botVersion + "`",
+                                            "• **Guilds:** " + guildCount,
+                                            "• **Commands:** `/status`, `/maintenance`, `/botinfo`, `/latency`, `/ping`, `/help`, `/ticketpanel`, `/profile`, `/rps`, `/moderation`"
+                                    ),
+                                    false
+                            )
+                            .addField(
+                                    "📡 Runtime",
+                                    String.join("\n",
+                                            "• **Gateway ping:** " + wsPing + "ms",
+                                            "• **Uptime:** " + uptimeText,
+                                            "• **Java:** " + System.getProperty("java.version"),
+                                            "• **Memory:** " + memText
+                                    ),
+                                    false
+                            )
+                            .addField(
+                                    "🗄️ MurmelAPI",
+                                    murmelDetails,
+                                    false
+                            )
+                            .addField(
+                                    "💡 Credits",
+                                    "• Bot code: by Lyzrex\n" +
+                                            "• MurmelAPI: Murmelmeister/PyjamaMurmeli",
+                                    false
+                            )
+                            .addField(
+                                    "🌐 Lythrion Network",
+                                    String.join("\n",
+                                            "• **Name:** " + networkName,
+                                            "• **IP:** `" + networkIp + "`",
+                                            "• **Status overview:** `/status`"
+                                    ),
+                                    false
+                            )
+                            .setFooter("Bot by Lyzrex • " + networkName)
+                            .setTimestamp(Instant.now());
 
-        if (admin) {
-            long dur = System.currentTimeMillis() - start;
-            sendDebugDm(member,
-                    "🧪 Debug `/botinfo`\n" +
-                            "Exec time: " + dur + "ms\n" +
-                            "Invoker: " + event.getUser().getAsTag() +
-                            " (" + event.getUser().getId() + ")");
-        }
+                    event.getHook().editOriginalEmbeds(eb.build()).queue();
+
+                    if (admin) {
+                        long dur = System.currentTimeMillis() - start;
+                        sendDebugDm(member,
+                                "🧪 Debug `/botinfo`\n" +
+                                        "Exec time: " + dur + "ms\n" +
+                                        "Invoker: " + event.getUser().getAsTag() +
+                                        " (" + event.getUser().getId() + ")");
+                    }
+                });
     }
 
     /* ====================================================================== */
@@ -317,42 +347,46 @@ public class SlashCommandListener extends ListenerAdapter {
     private void handleLatency(SlashCommandInteractionEvent event,
                                boolean admin,
                                Member member) {
+        event.deferReply(true).queue();
+
         long wsPing = jda.getGatewayPing();
+        MurmelApiStatus fallbackStatus = new MurmelApiStatus(false, -1L, 0, "MurmelAPI health check pending...");
 
-        long dbPing = -1;
-        long lythApiPing = -1;
-        long mcStatusPing = -1;
+        CompletableFuture<MurmelApiStatus> murmelFuture = murmelApiClient.checkHealthAsync()
+                .completeOnTimeout(new MurmelApiStatus(false, -1L, 0, "MurmelAPI health check timed out"), 7, TimeUnit.SECONDS);
+        CompletableFuture<Long> dbFuture = CompletableFuture.supplyAsync(databaseManager::ping)
+                .exceptionally(ex -> -1L);
+        CompletableFuture<Long> statusApiFuture = CompletableFuture.supplyAsync(statusService::pingStatusApi)
+                .exceptionally(ex -> -1L);
 
-        try {
-            dbPing = databaseManager.ping();
-        } catch (Exception ignored) {}
+        CompletableFuture.allOf(murmelFuture, dbFuture, statusApiFuture)
+                .orTimeout(7, TimeUnit.SECONDS)
+                .whenComplete((ignored, throwable) -> {
+                    MurmelApiStatus murmelStatus = murmelFuture.getNow(fallbackStatus);
+                    long dbPing = dbFuture.getNow(-1L);
+                    long statusApiPing = statusApiFuture.getNow(-1L);
 
-        try {
-            lythApiPing = statusService.pingLythApi();
-        } catch (Exception ignored) {}
+                    String murmelField = String.join("\n",
+                            "Status: " + murmelStatus.describeBrief(),
+                            "Details: " + murmelStatus.message()
+                    );
 
-        try {
-            mcStatusPing = statusService.pingMcStatus();
-        } catch (Exception ignored) {}
+                    EmbedBuilder eb = new EmbedBuilder()
+                            .setTitle("📶 Lythrion Latency Overview")
+                            .setColor(0x22c55e)
+                            .addField("WebSocket", wsPing + "ms", true)
+                            .addField("Database", (dbPing >= 0 ? dbPing + "ms" : "N/A"), true)
+                            .addField("MurmelAPI", murmelField, false)
+                            .addField("Status API", (statusApiPing >= 0 ? statusApiPing + "ms" : "N/A"), true)
+                            .addField("MurmelAPI Endpoint", murmelApiClient.getHealthUrl(), false)
+                            .setTimestamp(Instant.now());
 
-        // MurmelAPI Ping = aktuell DB-Ping
-        long murmelPing = dbPing;
+                    event.getHook().editOriginalEmbeds(eb.build()).queue();
 
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("📶 Lythrion Latency Overview")
-                .setColor(0x22c55e)
-                .addField("WebSocket", wsPing + "ms", true)
-                .addField("Database", (dbPing >= 0 ? dbPing + "ms" : "N/A"), true)
-                .addField("MurmelAPI (DB)", (murmelPing >= 0 ? murmelPing + "ms" : "N/A"), true)
-                .addField("Lyth API", (lythApiPing >= 0 ? lythApiPing + "ms" : "N/A"), true)
-                .addField("mcstatus.io", (mcStatusPing >= 0 ? mcStatusPing + "ms" : "N/A"), true)
-                .setTimestamp(Instant.now());
-
-        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
-
-        if (admin) {
-            sendDebugDm(member, "🧪 Debug `/latency`");
-        }
+                    if (admin) {
+                        sendDebugDm(member, "🧪 Debug `/latency`");
+                    }
+                });
     }
 
     /* ====================================================================== */
@@ -373,7 +407,12 @@ public class SlashCommandListener extends ListenerAdapter {
     /* ====================================================================== */
 
     private void handleProfile(SlashCommandInteractionEvent event, boolean admin) {
-        String input = event.getOption("query").getAsString();
+        OptionMapping option = event.getOption("input");
+        if (option == null) {
+            event.reply("❌ Missing required option `input`.").setEphemeral(true).queue();
+            return;
+        }
+        String input = option.getAsString();
 
         event.deferReply().queue();
 
@@ -385,14 +424,24 @@ public class SlashCommandListener extends ListenerAdapter {
 
         UserProfile profile = opt.get();
 
+        String firstLoginText = profile.getFirstLogin() != null
+                ? profile.getFirstLogin().toString()
+                : "Unknown";
+
+        String languageText = profile.getLanguageName() != null
+                ? profile.getLanguageName() + " (#" + profile.getLanguageId() + ")"
+                : "#" + profile.getLanguageId();
+
         EmbedBuilder eb = new EmbedBuilder()
                 .setTitle("📇 Player Profile – " + profile.getUsername())
                 .setColor(0x3b82f6)
                 .addField("ID", String.valueOf(profile.getId()), true)
-                .addField("UUID", profile.getUuid().toString(), false)
-                .addField("First login", profile.getFirstLogin().toString(), true)
-                .addField("Language ID", String.valueOf(profile.getLanguageId()), true)
+                .addField("UUID", profile.getUuid(), false)
+                .addField("First login", firstLoginText, true)
+                .addField("Language", languageText, true)
                 .addField("Playtime", formatDuration(profile.getPlaytimeSeconds() * 1000L), true)
+                .addField("Logins", String.valueOf(profile.getLoginCount()), true)
+                .addField("Debug", profile.isDebugEnabled() ? "Enabled" : "Disabled", true)
                 .setTimestamp(Instant.now());
 
         event.getHook().editOriginalEmbeds(eb.build()).queue();
@@ -405,32 +454,187 @@ public class SlashCommandListener extends ListenerAdapter {
     }
 
     /* ====================================================================== */
-    /* /game – kleines Guessing-Game mit Score in DB                          */
+    /* /rps – Rock Paper Scissors with stats                                  */
     /* ====================================================================== */
 
-    private void handleGame(SlashCommandInteractionEvent event) {
+    private void handleRps(SlashCommandInteractionEvent event) {
         String sub = event.getSubcommandName();
-        if (sub == null || !"guess".equals(sub)) {
-            event.reply("❌ Unknown game subcommand.").setEphemeral(true).queue();
+        if (sub == null) {
+            event.reply("❌ Please choose a subcommand (play, stats or top).").setEphemeral(true).queue();
             return;
         }
 
-        int secret = random.nextInt(10) + 1;
-        int guess = event.getOption("number").getAsInt();
+        switch (sub) {
+            case "play" -> gameService.handleRpsPlay(event);
+            case "stats" -> gameService.handleRpsStats(event);
+            case "top" -> gameService.handleRpsTop(event);
+            default -> event.reply("❌ Unknown RPS subcommand.").setEphemeral(true).queue();
+        }
+    }
 
-        User user = event.getUser();
-        boolean win = (guess == secret);
+    /* ====================================================================== */
+    /* /ping – compact latency + credits                                      */
+    /* ====================================================================== */
 
-        gameRepo.addGameResult(user.getIdLong(), win);
+    private void handlePing(SlashCommandInteractionEvent event, boolean admin, Member member) {
+        event.deferReply(true).queue();
 
-        String msg = win
-                ? "🎉 Correct! The number was **" + secret + "**."
-                : "❌ Wrong. The number was **" + secret + "**.";
+        long wsPing = jda.getGatewayPing();
+        CompletableFuture<Long> dbFuture = CompletableFuture.supplyAsync(databaseManager::ping)
+                .exceptionally(ex -> -1L);
+        CompletableFuture<MurmelApiStatus> murmelFuture = murmelApiClient.checkHealthAsync()
+                .completeOnTimeout(new MurmelApiStatus(false, -1L, 0, "MurmelAPI health check timed out"), 7, TimeUnit.SECONDS);
 
-        int score = gameRepo.getScore(user.getIdLong());
+        CompletableFuture.allOf(dbFuture, murmelFuture)
+                .whenComplete((ignored, throwable) -> {
+                    long dbPing = dbFuture.getNow(-1L);
+                    MurmelApiStatus murmelStatus = murmelFuture.getNow(new MurmelApiStatus(false, -1L, 0, "no response"));
 
-        event.reply(msg + "\nYour current score: **" + score + "**")
-                .setEphemeral(true).queue();
+                    EmbedBuilder eb = new EmbedBuilder()
+                            .setTitle("🏓 Pong!")
+                            .setColor(0x22c55e)
+                            .setDescription("Detailed latency overview")
+                            .addField("Gateway", wsPing + "ms", true)
+                            .addField("Database", dbPing >= 0 ? dbPing + "ms" : "N/A", true)
+                            .addField("MurmelAPI", murmelStatus.describeBrief(), false)
+                            .addField("Author", "Bot by **Lyzrex**", true)
+                            .addField("MurmelAPI", "by Murmelmeister / PyjamaMurmeli", true)
+                            .addField("GitHub", "https://github.com/Murmelmeister/MurmelAPI", false)
+                            .setTimestamp(Instant.now());
+
+                    event.getHook().editOriginalEmbeds(eb.build()).queue();
+
+                    if (admin) {
+                        sendDebugDm(member, "🧪 Debug `/ping`");
+                    }
+                });
+    }
+
+    /* ====================================================================== */
+    /* /help – command overview + credits                                     */
+    /* ====================================================================== */
+
+    private void handleHelp(SlashCommandInteractionEvent event) {
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("🤖 Lythrion.net Help")
+                .setColor(0x3b82f6)
+                .setDescription("Here are all available commands and functions.")
+                .addField("Utility", "`/ping`, `/help`, `/latency`, `/botinfo`", false)
+                .addField("Network", "`/status`, `/maintenance`, `/ticketpanel`", false)
+                .addField("Profiles", "`/profile <name|uuid>`", false)
+                .addField("Games", "`/rps play|stats|top`", false)
+                .addField("Moderation", "`/moderation ban|kick|timeout|unban`", false)
+                .addField("Credits", "Bot by **Lyzrex** • MurmelAPI by **Murmelmeister/PyjamaMurmeli**", false)
+                .addField("MurmelAPI GitHub", "https://github.com/Murmelmeister/MurmelAPI", false)
+                .setTimestamp(Instant.now());
+
+        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
+    }
+
+    /* ====================================================================== */
+    /* /moderation – ban, kick, timeout, unban                                */
+    /* ====================================================================== */
+
+    private void handleModeration(SlashCommandInteractionEvent event, boolean admin, Member member) {
+        String sub = event.getSubcommandName();
+        if (sub == null) {
+            event.reply("❌ Unknown moderation subcommand.").setEphemeral(true).queue();
+            return;
+        }
+
+        if (!event.isFromGuild()) {
+            event.reply("❌ Moderation commands can only be used in a server.").setEphemeral(true).queue();
+            return;
+        }
+
+        switch (sub) {
+            case "ban" -> handleBan(event, member);
+            case "kick" -> handleKick(event, member);
+            case "timeout" -> handleTimeout(event, member);
+            case "unban" -> handleUnban(event, member);
+            default -> event.reply("❌ Unknown moderation subcommand.").setEphemeral(true).queue();
+        }
+    }
+
+    private void handleBan(SlashCommandInteractionEvent event, Member executor) {
+        if (executor == null || !executor.hasPermission(Permission.BAN_MEMBERS)) {
+            event.reply("❌ You need BAN_MEMBERS to use this.").setEphemeral(true).queue();
+            return;
+        }
+
+        Member target = event.getOption("user") != null ? event.getOption("user").getAsMember() : null;
+        String reason = Optional.ofNullable(event.getOption("reason")).map(OptionMapping::getAsString).orElse("No reason provided");
+        int deleteDays = Optional.ofNullable(event.getOption("delete_days")).map(OptionMapping::getAsInt).orElse(0);
+
+        if (target == null) {
+            event.reply("❌ Could not resolve that member.").setEphemeral(true).queue();
+            return;
+        }
+
+        event.getGuild().ban(target, deleteDays, reason).queue(
+                ignored -> event.reply("✅ Banned **" + target.getEffectiveName() + "** (" + reason + ")").setEphemeral(true).queue(),
+                err -> event.reply("❌ Failed to ban: " + err.getMessage()).setEphemeral(true).queue()
+        );
+    }
+
+    private void handleKick(SlashCommandInteractionEvent event, Member executor) {
+        if (executor == null || !executor.hasPermission(Permission.KICK_MEMBERS)) {
+            event.reply("❌ You need KICK_MEMBERS to use this.").setEphemeral(true).queue();
+            return;
+        }
+
+        Member target = event.getOption("user") != null ? event.getOption("user").getAsMember() : null;
+        String reason = Optional.ofNullable(event.getOption("reason")).map(OptionMapping::getAsString).orElse("No reason provided");
+
+        if (target == null) {
+            event.reply("❌ Could not resolve that member.").setEphemeral(true).queue();
+            return;
+        }
+
+        target.kick(reason).queue(
+                ignored -> event.reply("✅ Kicked **" + target.getEffectiveName() + "** (" + reason + ")").setEphemeral(true).queue(),
+                err -> event.reply("❌ Failed to kick: " + err.getMessage()).setEphemeral(true).queue()
+        );
+    }
+
+    private void handleTimeout(SlashCommandInteractionEvent event, Member executor) {
+        if (executor == null || !executor.hasPermission(Permission.MODERATE_MEMBERS)) {
+            event.reply("❌ You need MODERATE_MEMBERS to use this.").setEphemeral(true).queue();
+            return;
+        }
+
+        Member target = event.getOption("user") != null ? event.getOption("user").getAsMember() : null;
+        int minutes = Optional.ofNullable(event.getOption("minutes")).map(OptionMapping::getAsInt).orElse(0);
+        String reason = Optional.ofNullable(event.getOption("reason")).map(OptionMapping::getAsString).orElse("No reason provided");
+
+        if (target == null || minutes <= 0) {
+            event.reply("❌ Provide a valid member and timeout duration (minutes).").setEphemeral(true).queue();
+            return;
+        }
+
+        target.timeoutFor(Duration.ofMinutes(minutes)).reason(reason).queue(
+                ignored -> event.reply("✅ Timed out **" + target.getEffectiveName() + "** for " + minutes + " minutes.").setEphemeral(true).queue(),
+                err -> event.reply("❌ Failed to timeout: " + err.getMessage()).setEphemeral(true).queue()
+        );
+    }
+
+    private void handleUnban(SlashCommandInteractionEvent event, Member executor) {
+        if (executor == null || !executor.hasPermission(Permission.BAN_MEMBERS)) {
+            event.reply("❌ You need BAN_MEMBERS to use this.").setEphemeral(true).queue();
+            return;
+        }
+
+        OptionMapping opt = event.getOption("user_id");
+        if (opt == null) {
+            event.reply("❌ Provide a user ID to unban.").setEphemeral(true).queue();
+            return;
+        }
+
+        String userId = opt.getAsString();
+        event.getGuild().unban(userId).queue(
+                ignored -> event.reply("✅ Unbanned user ID " + userId).setEphemeral(true).queue(),
+                err -> event.reply("❌ Failed to unban: " + err.getMessage()).setEphemeral(true).queue()
+        );
     }
 
     /* ====================================================================== */

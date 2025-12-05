@@ -7,10 +7,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * Vollständige Zugriffsschicht für Spielerprofile aus den Tabellen
+ * {@code users}, {@code user_playtime} und {@code languages}. Stellt
+ * zusammengesetzte Objekte bereit, die Sprache, Playtime, Logins sowie
+ * Debug- und First-Login-Informationen enthalten und vollständig aus der
+ * Datenbank bezogen werden.
+ */
 public class UserProfileRepository {
 
-    // TODO: change to your real table name + columns
-    private static final String TABLE_NAME = "murmel_users";
+    private static final String USERS_TABLE = "users";
+    private static final String PLAYTIME_TABLE = "user_playtime";
+    private static final String LANG_TABLE = "languages";
 
     private final DatabaseManager databaseManager;
 
@@ -19,10 +27,22 @@ public class UserProfileRepository {
     }
 
     public Optional<UserProfile> findByNameOrUuid(String input) {
-        String sql = "SELECT id, uuid, username, language_id, playtime_seconds, login_count, debug_enabled " +
-                "FROM " + TABLE_NAME + " " +
-                "WHERE uuid = ? OR username = ? " +
-                "LIMIT 1";
+        String sql = """
+                SELECT u.id,
+                       u.uuid,
+                       u.username,
+                       u.language_id,
+                       l.name AS language_name,
+                       COALESCE(p.play_time, 0) AS playtime_seconds,
+                       COALESCE(p.login_count, 0) AS login_count,
+                       u.debug_enabled,
+                       u.first_login
+                FROM %s u
+                LEFT JOIN %s p ON p.user_id = u.id
+                LEFT JOIN %s l ON l.id = u.language_id
+                WHERE u.uuid = ? OR u.username = ?
+                LIMIT 1
+                """.formatted(USERS_TABLE, PLAYTIME_TABLE, LANG_TABLE);
 
         try (Connection con = databaseManager.getConnection();
              PreparedStatement ps = con.prepareStatement(sql)) {
@@ -36,11 +56,23 @@ public class UserProfileRepository {
                     String uuid = rs.getString("uuid");
                     String username = rs.getString("username");
                     int lang = rs.getInt("language_id");
+                    String langName = rs.getString("language_name");
                     long play = rs.getLong("playtime_seconds");
                     int logins = rs.getInt("login_count");
                     boolean debug = rs.getBoolean("debug_enabled");
+                    Timestamp firstLogin = rs.getTimestamp("first_login");
 
-                    return Optional.of(new UserProfile(id, uuid, username, lang, play, logins, debug));
+                    return Optional.of(new UserProfile(
+                            id,
+                            uuid,
+                            username,
+                            lang,
+                            langName,
+                            play,
+                            logins,
+                            debug,
+                            firstLogin != null ? firstLogin.toInstant() : null
+                    ));
                 }
             }
         } catch (SQLException e) {
@@ -51,10 +83,22 @@ public class UserProfileRepository {
     }
 
     public List<UserProfile> findTopByPlaytime(int limit) {
-        String sql = "SELECT id, uuid, username, language_id, playtime_seconds, login_count, debug_enabled " +
-                "FROM " + TABLE_NAME + " " +
-                "ORDER BY playtime_seconds DESC " +
-                "LIMIT ?";
+        String sql = """
+                SELECT u.id,
+                       u.uuid,
+                       u.username,
+                       u.language_id,
+                       l.name AS language_name,
+                       COALESCE(p.play_time, 0) AS playtime_seconds,
+                       COALESCE(p.login_count, 0) AS login_count,
+                       u.debug_enabled,
+                       u.first_login
+                FROM %s u
+                LEFT JOIN %s p ON p.user_id = u.id
+                LEFT JOIN %s l ON l.id = u.language_id
+                ORDER BY playtime_seconds DESC
+                LIMIT ?
+                """.formatted(USERS_TABLE, PLAYTIME_TABLE, LANG_TABLE);
 
         List<UserProfile> list = new ArrayList<>();
 
@@ -70,9 +114,11 @@ public class UserProfileRepository {
                             rs.getString("uuid"),
                             rs.getString("username"),
                             rs.getInt("language_id"),
+                            rs.getString("language_name"),
                             rs.getLong("playtime_seconds"),
                             rs.getInt("login_count"),
-                            rs.getBoolean("debug_enabled")
+                            rs.getBoolean("debug_enabled"),
+                            rs.getTimestamp("first_login") != null ? rs.getTimestamp("first_login").toInstant() : null
                     ));
                 }
             }
@@ -84,10 +130,22 @@ public class UserProfileRepository {
     }
 
     public List<UserProfile> findTopByLoginCount(int limit) {
-        String sql = "SELECT id, uuid, username, language_id, playtime_seconds, login_count, debug_enabled " +
-                "FROM " + TABLE_NAME + " " +
-                "ORDER BY login_count DESC " +
-                "LIMIT ?";
+        String sql = """
+                SELECT u.id,
+                       u.uuid,
+                       u.username,
+                       u.language_id,
+                       l.name AS language_name,
+                       COALESCE(p.play_time, 0) AS playtime_seconds,
+                       COALESCE(p.login_count, 0) AS login_count,
+                       u.debug_enabled,
+                       u.first_login
+                FROM %s u
+                LEFT JOIN %s p ON p.user_id = u.id
+                LEFT JOIN %s l ON l.id = u.language_id
+                ORDER BY login_count DESC
+                LIMIT ?
+                """.formatted(USERS_TABLE, PLAYTIME_TABLE, LANG_TABLE);
 
         List<UserProfile> list = new ArrayList<>();
 
@@ -103,9 +161,11 @@ public class UserProfileRepository {
                             rs.getString("uuid"),
                             rs.getString("username"),
                             rs.getInt("language_id"),
+                            rs.getString("language_name"),
                             rs.getLong("playtime_seconds"),
                             rs.getInt("login_count"),
-                            rs.getBoolean("debug_enabled")
+                            rs.getBoolean("debug_enabled"),
+                            rs.getTimestamp("first_login") != null ? rs.getTimestamp("first_login").toInstant() : null
                     ));
                 }
             }
