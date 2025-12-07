@@ -1,96 +1,48 @@
 package net.lyzrex.lythrionbot.db;
 
-import net.lyzrex.lythrionbot.Env;
-
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileWriter;
-import java.nio.charset.StandardCharsets;
+import de.murmelmeister.library.database.Database;
+import de.murmelmeister.murmelapi.MurmelAPI;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.util.Properties;
 
 public class DatabaseManager {
 
-    private final String jdbcUrl;
-    private final String user;
-    private final String password;
-
-    public DatabaseManager() throws Exception {
-        String envUrl = Env.get("DB_URL");
-        String envUser = Env.get("DB_USER");
-        String envPass = Env.get("DB_PASSWORD");
-
-        if (envUrl != null && !envUrl.isBlank()) {
-            this.jdbcUrl = envUrl;
-            this.user = envUser != null ? envUser : "";
-            this.password = envPass != null ? envPass : "";
-            testConnection();
-            System.out.println("Connected to MySQL via environment DB_URL.");
-            return;
-        }
-
-        File file = new File("database.properties");
-        if (!file.exists()) {
-            writeDefaultDatabaseProperties(file);
-        }
-
-        Properties props = new Properties();
-        try (FileInputStream in = new FileInputStream(file)) {
-            props.load(in);
-        }
-
-        this.jdbcUrl = props.getProperty(
-                "jdbcUrl",
-                "jdbc:mysql://127.0.0.1:3306/murmelapi?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8"
-        );
-        this.user = props.getProperty("user", "root");
-        this.password = props.getProperty("password", "");
-
-        testConnection();
-        System.out.println("Connected to MySQL: " + jdbcUrl);
+    public DatabaseManager() {
+        // Die Datenbankverbindung wird von MurmelAPI verwaltet.
     }
 
-    private void writeDefaultDatabaseProperties(File file) throws Exception {
-        String content = """
-                jdbcUrl=jdbc:mysql://127.0.0.1:3306/murmelapi?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8
-                user=root
-                password=
-                """;
-
-        try (FileWriter fw = new FileWriter(file, StandardCharsets.UTF_8)) {
-            fw.write(content);
-        }
+    /**
+     * Gibt die zentrale MurmelLib Database Instanz zurück, die mit HikariCP verbunden ist.
+     */
+    public Database getDatabase() {
+        return MurmelAPI.getDatabase();
     }
 
-    private void testConnection() throws SQLException {
-        try (Connection ignored = getConnection()) {
-            // just test once
-        }
-    }
+    // --- Legacy-Methoden, die nun eine Ausnahme werfen oder delegieren ---
 
+    @Deprecated
     public Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(jdbcUrl, user, password);
+        throw new UnsupportedOperationException("Raw java.sql.Connection access is deprecated. Use DatabaseManager.getDatabase() for transactional operations.");
     }
 
+    @Deprecated
     public String getJdbcUrl() {
-        return jdbcUrl;
+        return "N/A - Use MurmelAPI.getDatabase()";
     }
 
+    @Deprecated
     public String getUser() {
-        return user;
+        return "N/A";
     }
 
     public long ping() {
         long start = System.currentTimeMillis();
-        try (Connection con = getConnection();
-             var ps = con.prepareStatement("SELECT 1")) {
-            ps.execute();
+        try {
+            // Führt eine einfache, transaktionale Abfrage über MurmelLib Database durch.
+            MurmelAPI.getDatabase().update("SELECT 1");
             return System.currentTimeMillis() - start;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return -1L;
+        } catch (Exception ignored) {
+            return -1L; // Fehler bei Verbindung/Abfrage
         }
     }
 }

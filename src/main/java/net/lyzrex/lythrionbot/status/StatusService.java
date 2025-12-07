@@ -19,11 +19,11 @@ import java.time.format.DateTimeFormatter;
 
 /**
  * Kümmert sich um:
- *  - HTTP-Abfragen (Velocity / Lobby / Citybuild)
- *  - Caching dieser Abfragen
- *  - Erzeugen des Status-Embeds für /status
- *  - Aktualisieren der Bot-Presence
- *  - API-Ping für /latency
+ * - HTTP-Abfragen (Velocity / Lobby / Citybuild)
+ * - Caching dieser Abfragen
+ * - Erzeugen des Status-Embeds für /status
+ * - Aktualisieren der Bot-Presence
+ * - API-Ping für /latency
  */
 public class StatusService {
 
@@ -133,6 +133,38 @@ public class StatusService {
             return -1L;
         }
     }
+
+    /**
+     * NEU: Wird von /latency verwendet: pingt die externe mcstatus.io API.
+     * Standard: Lythrion.net Java Status.
+     *
+     * @return Ping in ms oder -1 bei Fehler
+     */
+    public long pingExternalMcStatusApi() {
+        String ip = ConfigManager.getString("status.main_ip", "lythrion.net");
+        String type = ConfigManager.getString("status.main_type", "java");
+        String url = "https://api.mcstatus.io/v2/status/" + type + "/" + ip; // Fester URL
+
+        try {
+            long start = System.currentTimeMillis();
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(3))
+                    .GET()
+                    .build();
+
+            HttpResponse<Void> res = http.send(req, HttpResponse.BodyHandlers.discarding());
+            long ping = System.currentTimeMillis() - start;
+
+            if (res.statusCode() >= 200 && res.statusCode() < 500) {
+                return ping;
+            }
+            return -1L;
+        } catch (Exception ex) {
+            return -1L;
+        }
+    }
+
 
     /**
      * Baut das große Network-Status-Embed für /status.

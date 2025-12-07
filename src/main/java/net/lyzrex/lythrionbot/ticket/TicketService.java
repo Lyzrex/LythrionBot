@@ -15,6 +15,7 @@ import net.dv8tion.jda.api.interactions.components.ActionRow;
 import net.dv8tion.jda.api.interactions.components.buttons.Button;
 import net.dv8tion.jda.api.interactions.components.selections.StringSelectMenu;
 import net.dv8tion.jda.api.utils.FileUpload;
+import net.lyzrex.lythrionbot.ConfigManager;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -52,16 +53,20 @@ public class TicketService {
 
     // /ticketpanel
     public void sendTicketPanel(SlashCommandInteractionEvent event) {
+        // Hinzufügen einer konfigurierbaren Beschreibung für das Panel
+        String description = ConfigManager.getString("tickets.panelDescription",
+                """
+                Need help, want to report a player or appeal a punishment?
+                
+                • Select a category below
+                • A private ticket channel will be created for you
+                • Staff will respond as soon as possible
+                """.trim());
+
         EmbedBuilder eb = new EmbedBuilder()
                 .setTitle("🎟️ Lythrion Ticket Support")
                 .setColor(0x22c55e)
-                .setDescription("""
-                        Need help, want to report a player or appeal a punishment?
-
-                        • Select a category below
-                        • A private ticket channel will be created for you
-                        • Staff will respond as soon as possible
-                        """.trim())
+                .setDescription(description)
                 .setFooter("Lythrion Support • Tickets")
                 .setTimestamp(Instant.now());
 
@@ -108,6 +113,16 @@ public class TicketService {
             return;
         }
 
+        // **GalaxyBot-Style Check:** Verhindern, dass ein User mehrere Tickets öffnet
+        if (guild.getTextChannels().stream().anyMatch(ch ->
+                ch.getTopic() != null && ch.getTopic().contains("Ticket for " + member.getIdLong()))) {
+            event.reply("⚠️ Du hast bereits ein offenes Ticket. Bitte schließe es, bevor du ein neues öffnest.")
+                    .setEphemeral(true)
+                    .queue();
+            return;
+        }
+
+
         Category parent = (ticketCategoryId != 0)
                 ? guild.getCategoryById(ticketCategoryId)
                 : null;
@@ -139,27 +154,30 @@ public class TicketService {
                             ? "<@&" + staffRoleId + ">"
                             : "@here";
 
+                    // Konfigurierbarer Willkommens-Text
+                    String welcomeMessage = ConfigManager.getString("tickets.welcomeMessage",
+                            "Please describe your issue in as much detail as possible.\nA team member will be with you shortly.");
+
                     EmbedBuilder eb = new EmbedBuilder()
                             .setTitle("🎟️ Ticket – " + cat.getLabel())
-                            .setColor(0x22c55e)
+                            .setColor(0x3b82f6)
                             .setDescription(
-                                    member.getAsMention() + ", thanks for opening a ticket.\n\n" +
-                                            "**Category:** " + cat.getLabel() + "\n\n" +
-                                            "Please describe your issue in as much detail as possible.\n" +
-                                            "A team member will be with you shortly."
+                                    member.getAsMention() + ", danke für die Eröffnung eines Tickets.\n\n" +
+                                            "**Kategorie:** " + cat.getLabel() + "\n\n" +
+                                            welcomeMessage
                             )
                             .setTimestamp(Instant.now());
 
-                    channel.sendMessage(staffMention + " | New ticket from " + member.getAsMention())
+                    channel.sendMessage(staffMention + " | Neues Ticket von " + member.getAsMention())
                             .setEmbeds(eb.build())
-                            .setComponents(ActionRow.of(Button.danger(CLOSE_ID, "Close ticket")))
+                            .setComponents(ActionRow.of(Button.danger(CLOSE_ID, "❌ Ticket schließen")))
                             .queue();
 
-                    event.reply("✅ Your ticket has been created: " + channel.getAsMention())
+                    event.reply("✅ Dein Ticket wurde erstellt: " + channel.getAsMention())
                             .setEphemeral(true)
                             .queue();
                 }, error -> {
-                    event.reply("❌ Ticket could not be created. Please contact staff.")
+                    event.reply("❌ Ticket konnte nicht erstellt werden. Bitte kontaktiere das Personal.")
                             .setEphemeral(true)
                             .queue();
                 });
@@ -168,6 +186,16 @@ public class TicketService {
     // close + transcript
     public void handleCloseButton(ButtonInteractionEvent event) {
         if (!CLOSE_ID.equals(event.getComponentId())) {
+            return;
+        }
+
+        // **GalaxyBot-Style Check:** Nur Admins/Staff dürfen sofort schließen
+        Member member = event.getMember();
+        boolean isStaff = member != null && (member.hasPermission(Permission.ADMINISTRATOR) ||
+                (staffRoleId != 0 && member.getRoles().stream().anyMatch(r -> r.getIdLong() == staffRoleId)));
+
+        if (!isStaff) {
+            event.reply("❌ Nur Staff-Mitglieder dürfen das Ticket schließen.").setEphemeral(true).queue();
             return;
         }
 
@@ -207,20 +235,20 @@ public class TicketService {
 
             if (logChannel != null) {
                 EmbedBuilder eb = new EmbedBuilder()
-                        .setTitle("🎟️ Ticket closed")
+                        .setTitle("🎟️ Ticket geschlossen")
                         .setColor(0xf97316)
                         .setTimestamp(Instant.now())
-                        .setDescription("A ticket has been closed and archived.")
+                        .setDescription("Ein Ticket wurde geschlossen und archiviert.")
                         .addField("Channel", "#" + textChannel.getName() +
                                 " (`" + textChannel.getId() + "`)", false)
-                        .addField("Closed by",
+                        .addField("Geschlossen von",
                                 closerTag + " (`" + closerId + "`)", true)
-                        .addField("Owner",
+                        .addField("Besitzer",
                                 ownerId != 0
                                         ? "<@" + ownerId + "> (`" + ownerId + "`)"
                                         : "Unknown",
                                 true)
-                        .addField("Category",
+                        .addField("Kategorie",
                                 categoryId != null ? categoryId : "Unknown",
                                 true);
 
@@ -234,7 +262,7 @@ public class TicketService {
                         .queue();
             }
 
-            event.getHook().editOriginal("🔒 Ticket will be closed in 5 seconds...")
+            event.getHook().editOriginal("🔒 Ticket wird in 5 Sekunden gelöscht...")
                     .queue();
 
             textChannel.delete().queueAfter(5, TimeUnit.SECONDS);

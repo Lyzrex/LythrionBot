@@ -1,18 +1,19 @@
 package net.lyzrex.lythrionbot.moderation;
 
-import net.lyzrex.lythrionbot.db.DatabaseManager;
+import de.murmelmeister.library.database.Database;
+import de.murmelmeister.library.database.ResultSetProcessor;
 
-import java.sql.*;
+import java.sql.Types;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 
 public class ModerationRepository {
 
-    private final DatabaseManager databaseManager;
+    private final Database database; // Korrigierte Abhängigkeit
+    private static final String TABLE_NAME = "bot_moderation_logs";
 
-    public ModerationRepository(DatabaseManager databaseManager) {
-        this.databaseManager = databaseManager;
+    public ModerationRepository(Database database) { // Korrigierter Konstruktor
+        this.database = database;
         initTable();
     }
 
@@ -31,10 +32,10 @@ public class ModerationRepository {
                 )
                 """;
 
-        try (Connection con = databaseManager.getConnection();
-             Statement st = con.createStatement()) {
-            st.executeUpdate(sql);
-        } catch (SQLException e) {
+        // Nutzt database.update() zur Erstellung der Tabelle
+        try {
+            database.update(sql);
+        } catch (Exception e) {
             System.err.println("[ModerationRepository] Failed to init table: " + e.getMessage());
         }
     }
@@ -60,24 +61,26 @@ public class ModerationRepository {
         String sql = """
                 INSERT INTO bot_moderation_logs
                   (guild_id, user_id, moderator_id, action, reason, duration_seconds, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, FROM_UNIXTIME(?))
                 """;
 
-        try (Connection con = databaseManager.getConnection();
-             PreparedStatement ps = con.prepareStatement(sql)) {
-            ps.setLong(1, guildId);
-            ps.setLong(2, userId);
-            ps.setLong(3, moderatorId);
-            ps.setString(4, action);
-            ps.setString(5, reason);
-            if (durationSeconds == null) {
-                ps.setNull(6, Types.BIGINT);
-            } else {
-                ps.setLong(6, durationSeconds);
-            }
-            ps.setTimestamp(7, Timestamp.from(Instant.now()));
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        // Nutzt database.update() zur transaktionalen Ausführung
+        try {
+            database.update(sql, ps -> {
+                ps.setLong(1, guildId);
+                ps.setLong(2, userId);
+                ps.setLong(3, moderatorId);
+                ps.setString(4, action);
+                ps.setString(5, reason);
+                if (durationSeconds == null) {
+                    ps.setNull(6, Types.BIGINT);
+                } else {
+                    ps.setLong(6, durationSeconds);
+                }
+                // Speichert den Zeitstempel als Epoch-Sekunden
+                ps.setLong(7, Instant.now().getEpochSecond());
+            });
+        } catch (Exception e) {
             System.err.println("[ModerationRepository] Failed to insert log: " + e.getMessage());
         }
     }
@@ -91,37 +94,33 @@ public class ModerationRepository {
                 LIMIT ?
                 """;
 
-        List<ModerationEntry> list = new ArrayList<>();
+        // Definiere den Prozessor, um die Ergebnisse in ModerationEntry zu mappen
+        ResultSetProcessor<ModerationEntry> processor = rs -> {
+            long dur = rs.getLong("duration_seconds");
+            Long durObj = rs.wasNull() ? null : dur;
 
-        try (Connection con = databaseManager.getConnection();
-             PreparedStatement ps = con.prepareStatement(sql)) {
+            return new ModerationEntry(
+                    rs.getLong("id"),
+                    rs.getLong("guild_id"),
+                    rs.getLong("user_id"),
+                    rs.getLong("moderator_id"),
+                    rs.getString("action"),
+                    rs.getString("reason"),
+                    durObj,
+                    // Nutzt getTimestamp und Instant für saubere Konvertierung zu Epoch-Sekunden
+                    rs.getTimestamp("created_at").toInstant().getEpochSecond()
+            );
+        };
 
-            ps.setLong(1, guildId);
-            ps.setLong(2, userId);
-            ps.setInt(3, limit);
-
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long id = rs.getLong("id");
-                    long gId = rs.getLong("guild_id");
-                    long uId = rs.getLong("user_id");
-                    long mId = rs.getLong("moderator_id");
-                    String action = rs.getString("action");
-                    String reason = rs.getString("reason");
-                    Timestamp ts = rs.getTimestamp("created_at");
-                    long createdEpoch = ts.toInstant().getEpochSecond();
-                    long dur = rs.getLong("duration_seconds");
-                    Long durObj = rs.wasNull() ? null : dur;
-
-                    list.add(new ModerationEntry(
-                            id, gId, uId, mId, action, reason, durObj, createdEpoch
-                    ));
+        // Nutzt database.queryList()
+        return database.queryList(
+                sql,
+                processor,
+                ps -> {
+                    ps.setLong(1, guildId);
+                    ps.setLong(2, userId);
+                    ps.setInt(3, limit);
                 }
-            }
-        } catch (SQLException e) {
-            System.err.println("[ModerationRepository] Failed to load history: " + e.getMessage());
-        }
-
-        return list;
+        );
     }
 }

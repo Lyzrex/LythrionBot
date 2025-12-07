@@ -1,107 +1,94 @@
 package net.lyzrex.lythrionbot.game;
 
-import net.lyzrex.lythrionbot.db.DatabaseManager;
+import de.murmelmeister.library.database.Database;
+import de.murmelmeister.library.database.ResultSetProcessor;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 public class GameScoreRepository {
 
-    private final DatabaseManager db;
+    private final Database database; // Korrigierte Abhängigkeit
+    private static final String TABLE_NAME = "game_scores";
 
-    public GameScoreRepository(DatabaseManager db) {
-        this.db = db;
+    // Reusable processor to map SQL result to a GameScore object
+    private static final ResultSetProcessor<GameScore> SCORE_PROCESSOR = rs -> {
+        return new GameScore(
+                rs.getLong("user_id"),
+                rs.getInt("wins"),
+                rs.getInt("losses"),
+                rs.getInt("draws"),
+                rs.getLong("last_played")
+        );
+    };
+
+    public GameScoreRepository(Database database) { // Korrigierter Konstruktor
+        this.database = database;
     }
 
+    /**
+     * Retrieves an existing GameScore or creates a new default one, saving it to the database.
+     */
     public GameScore getOrCreate(long userId) {
-        try (Connection con = db.getConnection();
-             PreparedStatement ps = con.prepareStatement(
-                     "SELECT wins, losses, draws, last_played FROM game_scores WHERE user_id = ?"
-             )) {
+        String selectSql = "SELECT wins, losses, draws, last_played FROM " + TABLE_NAME + " WHERE user_id = ?";
 
-            ps.setLong(1, userId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return new GameScore(
-                            userId,
-                            rs.getInt("wins"),
-                            rs.getInt("losses"),
-                            rs.getInt("draws"),
-                            rs.getLong("last_played")
-                    );
-                }
-            }
+        // 1. Attempt to fetch existing score using database.query()
+        GameScore existing = database.query(
+                selectSql,
+                null,
+                SCORE_PROCESSOR,
+                stmt -> stmt.setLong(1, userId)
+        );
 
-            // not found -> create default
-            GameScore score = new GameScore(userId, 0, 0, 0, 0L);
-            save(score);
-            return score;
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            // on error: still return in-memory default, so command works
-            return new GameScore(userId, 0, 0, 0, 0L);
+        if (existing != null) {
+            return existing;
         }
+
+        // 2. If not found, create default and save
+        GameScore newScore = new GameScore(userId, 0, 0, 0, 0L);
+        save(newScore);
+        return newScore;
     }
 
+    /**
+     * Saves or updates the GameScore in the database using ON DUPLICATE KEY UPDATE.
+     */
     public void save(GameScore score) {
-        try (Connection con = db.getConnection();
-             PreparedStatement ps = con.prepareStatement(
-                     "INSERT INTO game_scores (user_id, wins, losses, draws, last_played) " +
-                             "VALUES (?, ?, ?, ?, ?) " +
-                             "ON DUPLICATE KEY UPDATE " +
-                             "wins = VALUES(wins), " +
-                             "losses = VALUES(losses), " +
-                             "draws = VALUES(draws), " +
-                             "last_played = VALUES(last_played)"
-             )) {
+        String sql = "INSERT INTO " + TABLE_NAME + " (user_id, wins, losses, draws, last_played) " +
+                "VALUES (?, ?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE " +
+                "wins = VALUES(wins), " +
+                "losses = VALUES(losses), " +
+                "draws = VALUES(draws), " +
+                "last_played = VALUES(last_played)";
 
-            ps.setLong(1, score.getUserId());
-            ps.setInt(2, score.getWins());
-            ps.setInt(3, score.getLosses());
-            ps.setInt(4, score.getDraws());
-            ps.setLong(5, score.getLastPlayed());
-
-            ps.executeUpdate();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        // Nutzt database.update()
+        database.update(
+                sql,
+                stmt -> {
+                    stmt.setLong(1, score.getUserId());
+                    stmt.setInt(2, score.getWins());
+                    stmt.setInt(3, score.getLosses());
+                    stmt.setInt(4, score.getDraws());
+                    stmt.setLong(5, score.getLastPlayed());
+                }
+        );
     }
 
+    /**
+     * Finds the top N scores based on (wins - losses) and then by wins.
+     */
     public List<GameScore> findTop(int limit) {
-        List<GameScore> list = new ArrayList<>();
+        String sql = "SELECT user_id, wins, losses, draws, last_played " +
+                "FROM " + TABLE_NAME + " " +
+                "ORDER BY (wins - losses) DESC, wins DESC " +
+                "LIMIT ?";
 
-        String sql = """
-                SELECT user_id, wins, losses, draws, last_played
-                FROM game_scores
-                ORDER BY (wins - losses) DESC, wins DESC
-                LIMIT ?
-                """;
-
-        try (Connection con = db.getConnection();
-             PreparedStatement ps = con.prepareStatement(sql)) {
-
-            ps.setInt(1, limit);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long userId = rs.getLong("user_id");
-                    GameScore score = new GameScore(
-                            userId,
-                            rs.getInt("wins"),
-                            rs.getInt("losses"),
-                            rs.getInt("draws"),
-                            rs.getLong("last_played")
-                    );
-                    list.add(score);
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        return list;
+        // Nutzt database.queryList()
+        return database.queryList(
+                sql,
+                SCORE_PROCESSOR,
+                stmt -> stmt.setInt(1, limit)
+        );
     }
 }
