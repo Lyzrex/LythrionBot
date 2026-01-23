@@ -11,23 +11,20 @@ import net.dv8tion.jda.api.events.interaction.component.StringSelectInteractionE
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.lyzrex.lythrionbot.ConfigManager;
 import net.lyzrex.lythrionbot.db.DatabaseManager;
+import net.lyzrex.lythrionbot.profile.UserProfile;
 import net.lyzrex.lythrionbot.profile.UserProfileRepository;
 import net.lyzrex.lythrionbot.status.MaintenanceManager;
 import net.lyzrex.lythrionbot.status.ServiceStatus;
 import net.lyzrex.lythrionbot.status.StatusService;
 import net.lyzrex.lythrionbot.ticket.TicketService;
 import net.lyzrex.lythrionbot.game.GameService;
-import net.lyzrex.lythrionbot.i18n.Language;
-import net.lyzrex.lythrionbot.language.LanguageService;
 
 import de.murmelmeister.murmelapi.group.Group;
 import de.murmelmeister.murmelapi.group.GroupProvider;
-import de.murmelmeister.murmelapi.language.LanguageProvider;
 import de.murmelmeister.murmelapi.punishment.PunishmentService;
 import de.murmelmeister.murmelapi.punishment.audit.PunishmentLog;
 import de.murmelmeister.murmelapi.punishment.audit.PunishmentLogProvider;
 import de.murmelmeister.murmelapi.punishment.type.PunishmentType;
-import de.murmelmeister.murmelapi.punishment.user.PunishmentCurrentUserProvider;
 import de.murmelmeister.murmelapi.utils.TimeUtil;
 
 import de.murmelmeister.murmelapi.user.User;
@@ -35,13 +32,10 @@ import de.murmelmeister.murmelapi.user.UserProvider;
 import de.murmelmeister.murmelapi.user.UserService;
 import de.murmelmeister.murmelapi.user.playtime.UserPlayTime;
 import de.murmelmeister.murmelapi.user.playtime.UserPlayTimeProvider;
-import de.murmelmeister.murmelapi.MurmelAPI;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
 import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
@@ -49,11 +43,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.UUID;
 
+
 /**
  * Haupt-Listener für alle Slash-Commands:
- * /status, /maintenance, /botinfo, /latency, /ticketpanel, /profile, /rps, /roll, /group, /punishment, /language
+ * /status, /maintenance, /botinfo, /latency, /ticketpanel, /profile, /rps, /roll, /group, /punishment
  */
-public class CommandListener extends ListenerAdapter {
+public class SlashCommandListener extends ListenerAdapter {
 
     private final JDA jda;
     private final StatusService statusService;
@@ -68,27 +63,22 @@ public class CommandListener extends ListenerAdapter {
     private final UserProvider userProvider;
     private final UserService userService;
     private final UserPlayTimeProvider playTimeProvider;
-    private final PunishmentCurrentUserProvider punishmentCurrentUserProvider;
-    private final LanguageService languageService;
-    private final LanguageProvider languageProvider;
 
     private final Random random = new Random();
 
-    public CommandListener(JDA jda,
-                           StatusService statusService,
-                           MaintenanceManager maintenanceManager,
-                           TicketService ticketService,
-                           UserProfileRepository userRepo,
-                           DatabaseManager databaseManager,
-                           GameService gameService,
-                           PunishmentService punishmentService,
-                           GroupProvider groupProvider,
-                           PunishmentLogProvider punishmentLogProvider,
-                           UserProvider userProvider,
-                           UserService userService,
-                           UserPlayTimeProvider playTimeProvider,
-                           PunishmentCurrentUserProvider punishmentCurrentUserProvider,
-                           LanguageService languageService) {
+    public SlashCommandListener(JDA jda,
+                                StatusService statusService,
+                                MaintenanceManager maintenanceManager,
+                                TicketService ticketService,
+                                UserProfileRepository userRepo,
+                                DatabaseManager databaseManager,
+                                GameService gameService,
+                                PunishmentService punishmentService,
+                                GroupProvider groupProvider,
+                                PunishmentLogProvider punishmentLogProvider,
+                                UserProvider userProvider,
+                                UserService userService,
+                                UserPlayTimeProvider playTimeProvider) {
         this.jda = jda;
         this.statusService = statusService;
         this.maintenanceManager = maintenanceManager;
@@ -102,9 +92,6 @@ public class CommandListener extends ListenerAdapter {
         this.userProvider = userProvider;
         this.userService = userService;
         this.playTimeProvider = playTimeProvider;
-        this.punishmentCurrentUserProvider = punishmentCurrentUserProvider;
-        this.languageService = languageService;
-        this.languageProvider = MurmelAPI.getLanguageProvider();
     }
 
     @Override
@@ -124,7 +111,6 @@ public class CommandListener extends ListenerAdapter {
             case "roll" -> handleRoll(event);
             case "group" -> handleGroup(event, admin);
             case "punishment" -> handlePunishment(event, admin);
-            case "language" -> handleLanguage(event);
             default -> {
                 // ignore unknown
             }
@@ -246,6 +232,13 @@ public class CommandListener extends ListenerAdapter {
                 .setTimestamp(Instant.now());
 
         event.replyEmbeds(eb.build()).setEphemeral(true).queue();
+
+        if (admin) {
+            sendDebugDm(member,
+                    "🧪 Debug `/maintenance set`\n" +
+                            "Service: " + serviceName(service) + "\n" +
+                            "New state: " + (enabled ? "Maintenance" : "Active"));
+        }
     }
 
     private String maintenanceFlag(boolean active) {
@@ -278,51 +271,84 @@ public class CommandListener extends ListenerAdapter {
         int guildCount = jda.getGuilds().size();
 
         String networkName = ConfigManager.getString("network.name", "Lythrion Network");
+        String networkIp = ConfigManager.getString("network.ip", "Lythrion.net");
         String iconUrl = ConfigManager.getString(
                 "network.icon",
                 "https://api.mcstatus.io/v2/icon/lythrion.net"
         );
-        String botVersion = ConfigManager.getString("bot.version", "0.0.2-beta1.13");
+        String botVersion = ConfigManager.getString("bot.version", "0.0.1-beta0.1");
+        String discordLink = ConfigManager.getString(
+                "network.discord",
+                "https://discord.gg/7jWqTXzYRz"
+        );
 
         Runtime rt = Runtime.getRuntime();
         long usedMem = rt.totalMemory() - rt.freeMemory();
         String memText = String.format("Used: %.1f MB", usedMem / 1024.0 / 1024.0);
 
-        // DB-Ping (MurmelAPI DB) - Nutzt den korrigierten, sicheren Ping des Delegates
-        long murmelPing = databaseManager.ping();
+        // DB-Ping (MurmelAPI DB)
+        long murmelPing = -1;
+        try {
+            murmelPing = databaseManager.ping();
+        } catch (Exception ignored) {}
 
         EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("🛰️ Bot Info & Diagnostics")
+                .setTitle("🛰️ " + networkName + " Bot")
                 .setColor(0x00bcd4)
                 .setThumbnail(iconUrl)
-                .setDescription("Status und Metriken des **" + networkName + "** Bots.")
+                .setDescription("**Bot by Lyzrex**\n" +
+                        "Discord: " + discordLink)
                 .addField(
-                        "🤖 Bot & Version",
+                        "🤖 Bot",
                         String.join("\n",
                                 "• **Version:** `" + botVersion + "`",
                                 "• **Guilds:** " + guildCount,
-                                "• **Owner:** Lyzrex"
+                                "• **Commands:** `/status`, `/maintenance`, `/botinfo`, `/latency`, `/ticketpanel`, `/profile`, `/rps`, `/roll`, `/group`, `/punishment`"
                         ),
                         false
                 )
                 .addField(
-                        "📡 Runtime Diagnostics",
+                        "📡 Runtime",
                         String.join("\n",
-                                "• **Gateway Ping:** " + wsPing + "ms",
-                                "• **DB Ping:** " + (murmelPing >= 0 ? murmelPing + "ms" : "❌ N/A"),
+                                "• **Gateway ping:** " + wsPing + "ms",
                                 "• **Uptime:** " + uptimeText,
+                                "• **Java:** " + System.getProperty("java.version"),
                                 "• **Memory:** " + memText
                         ),
                         false
                 )
-                .setFooter("Bot by Lyzrex")
+                .addField(
+                        "🗄️ MurmelAPI",
+                        "• **DB ping:** " + (murmelPing >= 0 ? murmelPing + "ms" : "N/A") + "\n" +
+                                "_(replace with real MurmelAPI call if you expose one)_",
+                        false
+                )
+                .addField(
+                        "🌐 Lythrion Network",
+                        String.join("\n",
+                                "• **Name:** " + networkName,
+                                "• **IP:** `" + networkIp + "`",
+                                "• **Status overview:** `/status`"
+                        ),
+                        false
+                )
+                .setFooter("Bot by Lyzrex • " + networkName)
                 .setTimestamp(Instant.now());
 
         event.replyEmbeds(eb.build()).setEphemeral(true).queue();
+
+        if (admin) {
+            long dur = System.currentTimeMillis() - start;
+            sendDebugDm(member,
+                    "🧪 Debug `/botinfo`\n" +
+                            "Exec time: " + dur + "ms\n" +
+                            "Invoker: " + event.getUser().getAsTag() +
+                            " (" + event.getUser().getId() + ")");
+        }
     }
 
     /* ====================================================================== */
-    /* /latency – Bot / DB / API Ping                                         */
+    /* /latency – Bot / DB / API Ping (Korrigiert)                            */
     /* ====================================================================== */
 
     private void handleLatency(SlashCommandInteractionEvent event,
@@ -330,22 +356,42 @@ public class CommandListener extends ListenerAdapter {
                                Member member) {
         long wsPing = jda.getGatewayPing();
 
-        long dbPing = databaseManager.ping();
-        long lythApiPing = statusService.pingStatusApi();
-        long mcStatusPing = statusService.pingExternalMcStatusApi();
+        long dbPing = -1;
+        long lythApiPing = -1;
+        long mcStatusPing = -1;
 
+        try {
+            dbPing = databaseManager.ping();
+        } catch (Exception ignored) {}
+
+        // KORREKTUR: Nutzt pingStatusApi() für den Lyth API Ping
+        try {
+            lythApiPing = statusService.pingStatusApi();
+        } catch (Exception ignored) {}
+
+        // KORREKTUR: Nutzt pingExternalMcStatusApi() für den mcstatus.io Ping
+        try {
+            mcStatusPing = statusService.pingExternalMcStatusApi();
+        } catch (Exception ignored) {}
+
+        // MurmelAPI Ping = aktuell DB-Ping (da DatabaseManager mit MurmelAPI-DB verbunden ist)
         long murmelPing = dbPing;
 
         EmbedBuilder eb = new EmbedBuilder()
                 .setTitle("📶 Lythrion Latency Overview")
                 .setColor(0x22c55e)
-                .addField("Gateway (WS)", wsPing + "ms", true)
-                .addField("MurmelAPI (DB)", (murmelPing >= 0 ? murmelPing + "ms" : "❌ N/A"), true)
-                .addField("Lyth Status API", (lythApiPing >= 0 ? lythApiPing + "ms" : "❌ N/A"), true)
-                .addField("mcstatus.io", (mcStatusPing >= 0 ? mcStatusPing + "ms" : "❌ N/A"), true)
+                .addField("WebSocket", wsPing + "ms", true)
+                .addField("Database", (dbPing >= 0 ? dbPing + "ms" : "N/A"), true)
+                .addField("MurmelAPI (DB)", (murmelPing >= 0 ? murmelPing + "ms" : "N/A"), true)
+                .addField("Lyth API", (lythApiPing >= 0 ? lythApiPing + "ms" : "N/A"), true)
+                .addField("mcstatus.io", (mcStatusPing >= 0 ? mcStatusPing + "ms" : "N/A"), true)
                 .setTimestamp(Instant.now());
 
         event.replyEmbeds(eb.build()).setEphemeral(true).queue();
+
+        if (admin) {
+            sendDebugDm(member, "🧪 Debug `/latency`");
+        }
     }
 
     /* ====================================================================== */
@@ -362,7 +408,7 @@ public class CommandListener extends ListenerAdapter {
     }
 
     /* ====================================================================== */
-    /* /profile – zieht Daten direkt aus der MurmelAPI                         */
+    /* /profile – zieht Daten direkt aus der MurmelAPI (Finaler Fix)          */
     /* ====================================================================== */
 
     private void handleProfile(SlashCommandInteractionEvent event, boolean admin) {
@@ -370,108 +416,56 @@ public class CommandListener extends ListenerAdapter {
 
         event.deferReply().queue();
 
-        // 1. MurmelAPI User abrufen
+        // 1. User anhand des Benutzernamens oder der UUID abrufen (über MurmelAPI Provider)
         User user = userProvider.findByUsername(input);
         if (user == null) {
+            // Wenn nicht über Name gefunden, versuchen wir es als UUID
             try {
                 if (input.length() >= 36) {
                     user = userProvider.findByMojangId(UUID.fromString(input));
                 }
-            } catch (IllegalArgumentException ignored) {}
+            } catch (IllegalArgumentException ignored) {
+                // Keine gültige UUID, User bleibt null
+            }
         }
 
+        // **FEHLERBEHEBUNG**
         if (user == null) {
             event.getHook().editOriginal("❌ No profile found for `" + input + "`.").queue();
             return;
         }
 
-        // 2. PlayTime-Daten abrufen
+        // 2. PlayTime-Daten abrufen (über MurmelAPI PlayTimeProvider)
         UserPlayTime playtime = playTimeProvider.findByUserId(user.id());
 
-        // 3. Gruppeninformationen abrufen (Annahme: ID 1 ist die primäre Gruppe oder Standardgruppe)
-        Group primaryGroup = groupProvider.findById(1);
-
-        // 4. Daten formatieren
         String firstLoginText = (user.firstLogin() != null)
-                ? formatLocalDateTime(user.firstLogin())
+                ? user.firstLogin().toString()
                 : "N/A";
 
+        // MurmelAPI speichert PlayTime in Sekunden
         long totalPlayTimeSeconds = (playtime != null) ? playtime.getPlayTime() : 0L;
         int loginCount = (playtime != null) ? playtime.getLoginCount() : 0;
-        String formattedPlaytime = formatDuration(totalPlayTimeSeconds * 1000L);
-
-        String groupName = (primaryGroup != null) ? primaryGroup.groupName() : "Guest";
-        String langCode = formatLanguageId(user.languageId());
 
         EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("👤 Player Profile: " + user.username())
-                .setColor(0x00bcd4) // Neutrale Farbe
-                .setDescription("### MurmelAPI User ID: `" + user.id() + "`\n" +
-                        "**UUID:** `" + user.mojangId().toString() + "`")
-
-                // --- Datenblock 1: Eckdaten & Gruppe ---
-                .addField("⭐ Eckdaten",
-                        String.join("\n",
-                                "• **Gruppe:** `" + groupName + "`",
-                                "• **Erster Login:** " + firstLoginText,
-                                "• **Sprache:** `" + langCode + "`"
-                        ),
-                        true)
-
-                // --- Datenblock 2: Spielstatistiken ---
-                .addField("📈 Spielstatistiken",
-                        String.join("\n",
-                                "• **Spielzeit:** " + formattedPlaytime,
-                                "• **Login-Zähler:** `" + loginCount + "`"
-                        ),
-                        true)
-
-                // --- Debug/Admin Block (Nicht Inline für saubere Trennung) ---
-                .addField("\u200B", "\u200B", false) // Leere Trennung
-                .addField("⚙️ Debug-Status",
-                        String.join("\n",
-                                "• **Debug User:** " + (user.debugUser() ? "Ja" : "Nein"),
-                                "• **Debug Enabled:** " + (user.debugEnabled() ? "🟢 Aktiv" : "⚪ Off")
-                        ),
-                        false)
-                .setFooter("Daten powered by MurmelAPI")
+                .setTitle("📇 Player Profile – " + user.username())
+                .setColor(0x3b82f6)
+                .addField("ID", String.valueOf(user.id()), true)
+                .addField("UUID", user.mojangId().toString(), false)
+                .addField("First login", firstLoginText, true)
+                .addField("Language ID", String.valueOf(user.languageId()), true)
+                .addField("Playtime", formatDuration(totalPlayTimeSeconds * 1000L), true)
+                .addField("Login Count", String.valueOf(loginCount), true)
                 .setTimestamp(Instant.now());
 
         event.getHook().editOriginalEmbeds(eb.build()).queue();
-    }
 
-    /* ====================================================================== */
-    /* /language [choice]                                                     */
-    /* ====================================================================== */
-
-    private void handleLanguage(SlashCommandInteractionEvent event) {
-        String choice = event.getOption("choice").getAsString();
-
-        Optional<Language> targetLang = Language.fromString(choice);
-
-        if (targetLang.isEmpty()) {
-            event.reply("❌ Ungültige Sprachauswahl. Verfügbar: English, Deutsch.").setEphemeral(true).queue();
-            return;
-        }
-
-        User user = userProvider.findByUsername(event.getUser().getName());
-        int userId = user != null ? user.id() : -1;
-
-        if (userId == -1 || user == null) {
-            event.reply("❌ Dein Minecraft/MurmelAPI-Account konnte nicht gefunden werden. Bitte verbinde deinen Account zuerst.").setEphemeral(true).queue();
-            return;
-        }
-
-        boolean success = languageService.setLanguage(userId, targetLang.get());
-
-        if (success) {
-            String langCode = targetLang.get().name().equalsIgnoreCase("DE") ? "Deutsch (`de-DE`)" : "English (`en-US`)";
-            event.reply("✅ Die Sprache wurde auf **" + langCode + "** umgestellt.").setEphemeral(true).queue();
-        } else {
-            event.reply("❌ Fehler beim Speichern der Sprache. Konnte MurmelAPI nicht aktualisieren.").setEphemeral(true).queue();
+        if (admin) {
+            sendDebugDm(event.getMember(),
+                    "🧪 Debug `/profile`\n" +
+                            "Query: " + input + "\n" +
+                            "User ID: " + user.id());
         }
     }
-
 
     /* ====================================================================== */
     /* /rps – Rock Paper Scissors (RPS) Game                                  */
@@ -495,7 +489,7 @@ public class CommandListener extends ListenerAdapter {
     }
 
     /* ====================================================================== */
-    /* /roll – Dice Game                                                      */
+    /* /roll – Dice Game (NEU)                                                */
     /* ====================================================================== */
 
     private void handleRoll(SlashCommandInteractionEvent event) {
@@ -503,7 +497,7 @@ public class CommandListener extends ListenerAdapter {
     }
 
     /* ====================================================================== */
-    /* /group – MurmelAPI Group Info                                          */
+    /* /group – MurmelAPI Group Info (NEU)                                    */
     /* ====================================================================== */
 
     private void handleGroup(SlashCommandInteractionEvent event, boolean admin) {
@@ -520,20 +514,18 @@ public class CommandListener extends ListenerAdapter {
         EmbedBuilder eb = new EmbedBuilder()
                 .setTitle("🏷️ MurmelAPI Gruppe: " + group.groupName())
                 .setColor(0x00bcd4)
-                .setDescription("Detaillierte Informationen zur Gruppe **" + group.groupName() + "**.")
                 .addField("ID", String.valueOf(group.id()), true)
                 .addField("Priorität", String.valueOf(group.priority()), true)
-                .addField("Standardgruppe", group.isDefault() ? "🟢 Ja" : "⚪ Nein", true)
-                .addField("Erstellt von (ID)", String.valueOf(group.createdBy()), true)
-                .addField("Erstellt am", formatLocalDateTime(group.createdAt()), true)
-                .setFooter("Daten powered by MurmelAPI")
+                .addField("Standardgruppe", group.isDefault() ? "Ja" : "Nein", true)
+                .addField("Erstellt von", String.valueOf(group.createdBy()), true)
+                .addField("Erstellt am", group.createdAt().toString(), true)
                 .setTimestamp(Instant.now());
 
         event.getHook().editOriginalEmbeds(eb.build()).queue();
     }
 
     /* ====================================================================== */
-    /* /punishment – Subcommand Handler                                       */
+    /* /punishment history – MurmelAPI Punishment Audit (KORRIGIERT)          */
     /* ====================================================================== */
 
     private void handlePunishment(SlashCommandInteractionEvent event, boolean admin) {
@@ -544,20 +536,12 @@ public class CommandListener extends ListenerAdapter {
         }
 
         String sub = event.getSubcommandName();
-        if (sub == null) return;
-
-        switch (sub) {
-            case "history" -> handlePunishmentHistory(event);
-            case "list" -> handlePunishmentList(event);
-            default -> event.reply("❌ Unbekanntes Punishment Subkommando.").setEphemeral(true).queue();
+        if (sub == null || !"history".equals(sub)) {
+            event.reply("❌ Unbekanntes Punishment Subkommando.")
+                    .setEphemeral(true).queue();
+            return;
         }
-    }
 
-    /* ====================================================================== */
-    /* /punishment history – MurmelAPI Punishment Audit                       */
-    /* ====================================================================== */
-
-    private void handlePunishmentHistory(SlashCommandInteractionEvent event) {
         String input = event.getOption("query").getAsString(); // Minecraft Name oder UUID
         event.deferReply().queue();
 
@@ -577,10 +561,9 @@ public class CommandListener extends ListenerAdapter {
             return;
         }
 
-        // 2. Punishment Logs abrufen (Zuletzt 10 Logs)
+        // 2. Punishment Logs abrufen (KORRIGIERT: Zugriff über den injizierten Provider)
         int userId = user.id();
         List<PunishmentLog> logs = punishmentLogProvider.getLogsByUserId(userId);
-
 
         if (logs.isEmpty()) {
             event.getHook().editOriginal("✅ Keine Punishment-Einträge für **" + user.username() + "** gefunden.").queue();
@@ -591,7 +574,8 @@ public class CommandListener extends ListenerAdapter {
         logs.stream().limit(10).forEach(log -> {
             PunishmentType type = PunishmentType.fromId(log.reasonTypeId());
             String typeName = type != null ? type.getName() : "Unbekannt";
-            String duration = log.isPermanent() ? "Permanent" : formatDuration(log.reasonDuration() * 1000L); // MurmelAPI gibt Sekunden aus
+            // Annahme: MessageService ist nicht injiziert, daher Standardformatierung mit TimeUtil.java
+            String duration = log.isPermanent() ? "Permanent" : TimeUtil.formatDuration(null, 1, log.reasonDuration());
 
             sb.append("`").append(log.id().toString().substring(0, 8)).append("` | ")
                     .append("**Aktion:** ").append(log.action().name()).append(" | ")
@@ -609,19 +593,6 @@ public class CommandListener extends ListenerAdapter {
         event.getHook().editOriginalEmbeds(eb.build()).queue();
     }
 
-    /* ====================================================================== */
-    /* /punishment list (Platzhalter)                                         */
-    /* ====================================================================== */
-
-    private void handlePunishmentList(SlashCommandInteractionEvent event) {
-        String type = event.getOption("type").getAsString(); // BAN, MUTE, WARN
-        PunishmentType punishmentType = PunishmentType.valueOf(type);
-
-        event.deferReply().queue();
-
-        // Da die genaue API-Methode unbekannt ist, verwenden wir einen Platzhalter:
-        event.getHook().editOriginalFormat("Listet die aktiven Bestrafungen vom Typ **%s** auf (To be fully implemented).", punishmentType.name()).queue();
-    }
 
     /* ====================================================================== */
     /* Ticket-Events (SelectMenu / Button)                                    */
@@ -646,7 +617,7 @@ public class CommandListener extends ListenerAdapter {
     }
 
     /* ====================================================================== */
-    /* Helper Methoden                                                        */
+    /* Helper                                                                 */
     /* ====================================================================== */
 
     private void sendDebugDm(Member member, String msg) {
@@ -656,7 +627,6 @@ public class CommandListener extends ListenerAdapter {
                 .queue(ch -> ch.sendMessage(msg).queue(), err -> {});
     }
 
-    // Formatierung für Spielzeit (z.B. 1d 5h 30m)
     private String formatDuration(long ms) {
         long totalSeconds = ms / 1000;
         long days = totalSeconds / 86400;
@@ -672,26 +642,5 @@ public class CommandListener extends ListenerAdapter {
         if (minutes > 0 || sb.length() > 0) sb.append(minutes).append("m ");
         sb.append(seconds).append("s");
         return sb.toString().trim();
-    }
-
-    // Formatierung für Datum und Uhrzeit (z.B. 11.12.2025 18:20:43)
-    private String formatLocalDateTime(LocalDateTime dateTime) {
-        if (dateTime == null) return "N/A";
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss");
-        return dateTime.format(formatter);
-    }
-
-    // Abruf des Sprachcodes aus der MurmelAPI (mit Fallback, da getLanguageCode() unbekannt ist)
-    private String formatLanguageId(int languageId) {
-        de.murmelmeister.murmelapi.language.Language murmelLang = languageProvider.findById(languageId);
-
-        if (murmelLang != null) {
-            // ANNAHME: Wir haben keinen Zugriff auf die tatsächliche Methode (getLanguageCode/getCode).
-            // Wir geben einen Fallback zurück, um den Fehler zu vermeiden.
-            return "ID: " + languageId + " (Resolved)";
-        }
-
-        // Fallback, wenn Provider keine Daten liefert
-        return "ID: " + languageId;
     }
 }

@@ -1,21 +1,17 @@
 package net.lyzrex.lythrionbot.language;
 
-import de.murmelmeister.murmelapi.MurmelAPI;
 import de.murmelmeister.murmelapi.user.User;
 import de.murmelmeister.murmelapi.user.UserProvider;
 import net.lyzrex.lythrionbot.i18n.Language;
-import de.murmelmeister.murmelapi.language.LanguageProvider;
-
-import java.util.Optional;
 
 /**
  * Service zur Verwaltung der Sprachpräferenz eines Benutzers, gespeichert in der MurmelAPI.
  */
 public class LanguageService {
 
-    private final UserProvider userProvider;
+    private UserProvider userProvider = null;
 
-    public LanguageService(UserProvider userProvider) {
+    public LanguageService() {
         this.userProvider = userProvider;
     }
 

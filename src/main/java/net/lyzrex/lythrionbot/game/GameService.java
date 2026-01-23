@@ -3,7 +3,6 @@ package net.lyzrex.lythrionbot.game;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
-import net.lyzrex.lythrionbot.i18n.Messages;
 
 import de.murmelmeister.murmelapi.MurmelAPI;
 import de.murmelmeister.murmelapi.language.message.MessageService;
@@ -16,11 +15,11 @@ import java.util.Random;
 public class GameService {
 
     private final GameScoreRepository repo;
-    private final UserProvider userProvider;
+    private UserProvider userProvider = null;
     private final Random random = new Random();
     private long virtualBalance = 1000; // SIMULIERTE BALANCE FÜR DAS WÜRFELSPIEL
 
-    public GameService(GameScoreRepository repo, UserProvider userProvider) {
+    public GameService(GameScoreRepository repo) {
         this.repo = repo;
         this.userProvider = userProvider;
     }
