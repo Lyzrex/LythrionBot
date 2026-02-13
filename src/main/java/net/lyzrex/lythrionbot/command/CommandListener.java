@@ -5,12 +5,16 @@ import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
+import net.dv8tion.jda.api.entities.emoji.Emoji;
+import net.dv8tion.jda.api.events.guild.member.GuildMemberJoinEvent;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.component.StringSelectInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.lyzrex.lythrionbot.ConfigManager;
 import net.lyzrex.lythrionbot.db.DatabaseManager;
+import net.lyzrex.lythrionbot.db.SyntrixRepository;
 import net.lyzrex.lythrionbot.profile.UserProfileRepository;
 import net.lyzrex.lythrionbot.status.MaintenanceManager;
 import net.lyzrex.lythrionbot.status.ServiceStatus;
@@ -22,37 +26,31 @@ import net.lyzrex.lythrionbot.language.LanguageService;
 
 import de.murmelmeister.murmelapi.group.Group;
 import de.murmelmeister.murmelapi.group.GroupProvider;
-import de.murmelmeister.murmelapi.language.LanguageProvider;
 import de.murmelmeister.murmelapi.punishment.PunishmentService;
-import de.murmelmeister.murmelapi.punishment.audit.PunishmentLog;
 import de.murmelmeister.murmelapi.punishment.audit.PunishmentLogProvider;
 import de.murmelmeister.murmelapi.punishment.type.PunishmentType;
 import de.murmelmeister.murmelapi.punishment.user.PunishmentCurrentUserProvider;
-import de.murmelmeister.murmelapi.utils.TimeUtil;
-
 import de.murmelmeister.murmelapi.user.User;
 import de.murmelmeister.murmelapi.user.UserProvider;
 import de.murmelmeister.murmelapi.user.UserService;
+import de.murmelmeister.murmelapi.user.parent.UserParent;
 import de.murmelmeister.murmelapi.user.playtime.UserPlayTime;
 import de.murmelmeister.murmelapi.user.playtime.UserPlayTimeProvider;
-import de.murmelmeister.murmelapi.MurmelAPI;
 
-import java.lang.management.ManagementFactory;
-import java.lang.management.RuntimeMXBean;
+import de.murmelmeister.murmelapi.MurmelAPI;
+import de.murmelmeister.murmelapi.utils.TimeUtil;
+
+import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.Random;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.UUID;
 
-/**
- * Haupt-Listener für alle Slash-Commands:
- * /status, /maintenance, /botinfo, /latency, /ticketpanel, /profile, /rps, /roll, /group, /punishment, /language
- */
 public class CommandListener extends ListenerAdapter {
 
     private final JDA jda;
@@ -70,25 +68,14 @@ public class CommandListener extends ListenerAdapter {
     private final UserPlayTimeProvider playTimeProvider;
     private final PunishmentCurrentUserProvider punishmentCurrentUserProvider;
     private final LanguageService languageService;
-    private final LanguageProvider languageProvider;
+    private final SyntrixRepository syntrixRepository;
 
-    private final Random random = new Random();
-
-    public CommandListener(JDA jda,
-                           StatusService statusService,
-                           MaintenanceManager maintenanceManager,
-                           TicketService ticketService,
-                           UserProfileRepository userRepo,
-                           DatabaseManager databaseManager,
-                           GameService gameService,
-                           PunishmentService punishmentService,
-                           GroupProvider groupProvider,
-                           PunishmentLogProvider punishmentLogProvider,
-                           UserProvider userProvider,
-                           UserService userService,
-                           UserPlayTimeProvider playTimeProvider,
-                           PunishmentCurrentUserProvider punishmentCurrentUserProvider,
-                           LanguageService languageService) {
+    public CommandListener(JDA jda, StatusService statusService, MaintenanceManager maintenanceManager,
+                           TicketService ticketService, UserProfileRepository userRepo, DatabaseManager databaseManager,
+                           GameService gameService, PunishmentService punishmentService, GroupProvider groupProvider,
+                           PunishmentLogProvider punishmentLogProvider, UserProvider userProvider, UserService userService,
+                           UserPlayTimeProvider playTimeProvider, PunishmentCurrentUserProvider punishmentCurrentUserProvider,
+                           LanguageService languageService, SyntrixRepository syntrixRepository) {
         this.jda = jda;
         this.statusService = statusService;
         this.maintenanceManager = maintenanceManager;
@@ -104,7 +91,31 @@ public class CommandListener extends ListenerAdapter {
         this.playTimeProvider = playTimeProvider;
         this.punishmentCurrentUserProvider = punishmentCurrentUserProvider;
         this.languageService = languageService;
-        this.languageProvider = MurmelAPI.getLanguageProvider();
+        this.syntrixRepository = syntrixRepository;
+    }
+
+    @Override
+    public void onGuildMemberJoin(GuildMemberJoinEvent event) {
+        try {
+            String channelId = ConfigManager.getString("channels.welcome", "0");
+            if (channelId.equals("0")) return;
+
+            TextChannel channel = event.getGuild().getTextChannelById(channelId);
+            if (channel != null) {
+                EmbedBuilder eb = new EmbedBuilder()
+                        .setTitle("👋 Welcome to Lythrion!")
+                        .setDescription("Hello " + event.getMember().getAsMention() + ", welcome to the **Lythrion Network** Discord!")
+                        .setColor(0x22c55e)
+                        .setThumbnail(event.getUser().getEffectiveAvatarUrl())
+                        .addField("📜 Rules", "Please check our rules channel.", true)
+                        .addField("🎮 Join", "Use `/ip` to get the server address.", true)
+                        .setFooter("Member #" + event.getGuild().getMemberCount())
+                        .setTimestamp(Instant.now());
+                channel.sendMessageEmbeds(eb.build()).queue();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
@@ -113,585 +124,535 @@ public class CommandListener extends ListenerAdapter {
         Member member = event.getMember();
         boolean admin = member != null && member.hasPermission(Permission.ADMINISTRATOR);
 
-        switch (cmd) {
-            case "status" -> handleStatus(event, admin, member);
-            case "maintenance" -> handleMaintenance(event, admin, member);
-            case "botinfo" -> handleBotInfo(event, admin, member);
-            case "latency" -> handleLatency(event, admin, member);
-            case "ticketpanel" -> handleTicketPanel(event, admin);
-            case "profile" -> handleProfile(event, admin);
-            case "rps" -> handleRps(event);
-            case "roll" -> handleRoll(event);
-            case "group" -> handleGroup(event, admin);
-            case "punishment" -> handlePunishment(event, admin);
-            case "language" -> handleLanguage(event);
-            default -> {
-                // ignore unknown
+        try {
+            switch (cmd) {
+                case "status" -> handleStatus(event);
+                case "maintenance" -> handleMaintenance(event, admin);
+                case "botinfo" -> handleBotInfo(event);
+                case "latency", "ping" -> handleLatency(event);
+                case "ticketpanel" -> handleTicketPanel(event, admin);
+                case "profile" -> handleProfile(event);
+                case "rps" -> gameService.handleRpsPlay(event);
+                case "roll" -> gameService.handleDiceRoll(event);
+                case "group" -> handleGroup(event);
+                case "punish" -> handlePunishMinecraft(event, admin);
+                case "language" -> handleLanguage(event);
+                case "ip" -> handleIp(event);
+                case "help" -> handleHelp(event);
+                case "tutorial" -> handleTutorial(event);
+                case "leaderboard" -> handleLeaderboard(event);
+                case "clear" -> handleClear(event, member);
+                case "kick" -> handleKick(event, member);
+                case "timeout" -> handleTimeout(event, member);
+                case "announce" -> handleAnnounce(event, admin);
+                case "suggest" -> handleSuggest(event);
+                case "feedback" -> handleFeedback(event);
+                default -> event.reply("❌ Unknown command.").setEphemeral(true).queue();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            if (!event.isAcknowledged()) {
+                event.reply("❌ Ein interner Fehler ist aufgetreten: " + e.getMessage()).setEphemeral(true).queue();
+            } else {
+                event.getHook().sendMessage("❌ Ein interner Fehler ist aufgetreten: " + e.getMessage()).setEphemeral(true).queue();
             }
         }
     }
 
-    /* ====================================================================== */
-    /* /status – Network Status                                               */
-    /* ====================================================================== */
+    // --- COMMAND HANDLERS ---
 
-    private void handleStatus(SlashCommandInteractionEvent event, boolean admin, Member member) {
-        long start = System.currentTimeMillis();
-        event.deferReply().queue();
+    private void handleIp(SlashCommandInteractionEvent event) {
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("🌍 Lythrion Network Address")
+                .setColor(0x00bcd4)
+                .addField("Java Edition", "`Lythrion.net` (1.20+)", false)
+                .addField("Bedrock Edition", "`bedrock.Lythrion.net`\nPort: `19132`", false)
+                .setFooter("Join us now!");
+        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
+    }
 
-        // HTTP-Abfragen parallel holen
-        CompletableFuture<ServiceStatus> mainFuture =
-                CompletableFuture.supplyAsync(statusService::fetchMainStatus);
-        CompletableFuture<ServiceStatus> lobbyFuture =
-                CompletableFuture.supplyAsync(statusService::fetchLobbyStatus);
-        CompletableFuture<ServiceStatus> cbFuture =
-                CompletableFuture.supplyAsync(statusService::fetchCitybuildStatus);
+    private void handleHelp(SlashCommandInteractionEvent event) {
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("🤖 Bot Commands")
+                .setColor(0x5865F2)
+                .setDescription("Here is a list of available commands:")
+                .addField("General", "`/ip` - Server IP\n`/status` - Network Status\n`/tutorial` - How to join\n`/leaderboard` - Global Level Top 10", false)
+                .addField("User", "`/profile <name>` - Player Stats\n`/language` - Set Bot Language\n`/suggest` - Make a suggestion\n`/feedback` - Send feedback", false)
+                .addField("Games", "`/rps play` - Rock Paper Scissors\n`/roll` - Dice Game", false);
 
-        CompletableFuture.allOf(mainFuture, lobbyFuture, cbFuture)
-                .orTimeout(10, TimeUnit.SECONDS)
-                .whenComplete((ignored, throwable) -> {
-                    if (throwable != null) {
-                        event.getHook()
-                                .editOriginal("❌ Failed to fetch network status (timeout).")
-                                .queue();
-                        return;
-                    }
+        if (event.getMember().hasPermission(Permission.KICK_MEMBERS)) {
+            eb.addField("Moderation", "`/punish` - Ban/Mute MC Player\n`/kick` - Kick Discord User\n`/timeout` - Timeout Discord User\n`/clear` - Delete messages\n`/announce` - Send announcement", false);
+        }
+        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
+    }
 
-                    ServiceStatus main = mainFuture.join();
-                    ServiceStatus lobby = lobbyFuture.join();
-                    ServiceStatus citybuild = cbFuture.join();
+    private void handleTutorial(SlashCommandInteractionEvent event) {
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("📚 How to join Lythrion")
+                .setColor(0xFFA500)
+                .addField("🖥️ Java Edition", "1. Multiplayer > Add Server\n2. IP: `Lythrion.net`\n3. Connect!", false)
+                .addField("📱 Bedrock / Pocket Edition", "1. Servers > Add Server\n2. IP: `bedrock.Lythrion.net`\n3. Port: `19132`\n4. Save & Join!", false)
+                .setFooter("We support versions 1.20.1 and newer!");
+        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
+    }
 
-                    statusService.updatePresenceFromData(jda, main, lobby, citybuild);
-                    MessageEmbed embed = statusService.buildStatusEmbed(main, lobby, citybuild);
+    private void handleLatency(SlashCommandInteractionEvent event) {
+        event.deferReply(true).queue();
 
-                    long dur = System.currentTimeMillis() - start;
-                    event.getHook().editOriginalEmbeds(embed).queue();
+        CompletableFuture.supplyAsync(() -> databaseManager.ping())
+                .thenAccept(dbPing -> {
+                    long wsPing = jda.getGatewayPing();
 
-                    if (admin) {
-                        sendDebugDm(member,
-                                "🧪 Debug `/status`\n" +
-                                        "Exec time: " + dur + "ms");
-                    }
+                    EmbedBuilder eb = new EmbedBuilder()
+                            .setTitle("📶 Latency")
+                            .setColor(0x22c55e)
+                            .addField("Gateway (Discord)", wsPing + "ms", true)
+                            .addField("Database (Murmel)", (dbPing >= 0 ? dbPing + "ms" : "❌ Timeout"), true);
+
+                    event.getHook().editOriginalEmbeds(eb.build()).queue();
+                })
+                .exceptionally(e -> {
+                    event.getHook().editOriginal("❌ Fehler beim Abrufen der Latenz: " + e.getMessage()).queue();
+                    return null;
                 });
     }
 
-    /* ====================================================================== */
-    /* /maintenance                                                           */
-    /* ====================================================================== */
-
-    private void handleMaintenance(SlashCommandInteractionEvent event, boolean admin, Member member) {
-        String sub = event.getSubcommandName();
-        if (sub == null) {
-            event.reply("❌ Unknown maintenance subcommand.")
-                    .setEphemeral(true).queue();
-            return;
-        }
-        switch (sub) {
-            case "status" -> handleMaintenanceStatus(event, admin, member);
-            case "set" -> handleMaintenanceSet(event, admin, member);
-            default -> event.reply("❌ Unknown maintenance subcommand.")
-                    .setEphemeral(true).queue();
-        }
+    private void handleLeaderboard(SlashCommandInteractionEvent event) {
+        event.deferReply().queue();
+        CompletableFuture.supplyAsync(() -> syntrixRepository.getGlobalLevelLeaderboard(10))
+                .thenAccept(list -> {
+                    if (list.isEmpty()) {
+                        event.getHook().editOriginal("❌ No data available.").queue();
+                        return;
+                    }
+                    StringBuilder sb = new StringBuilder();
+                    int rank = 1;
+                    for (SyntrixRepository.LeaderboardEntry e : list) {
+                        String medal = rank == 1 ? "🥇" : (rank == 2 ? "🥈" : (rank == 3 ? "🥉" : "▪️"));
+                        sb.append(medal).append(" `").append(rank).append(".` **").append(e.username())
+                                .append("** — Level ").append((int) e.value()).append("\n");
+                        rank++;
+                    }
+                    EmbedBuilder eb = new EmbedBuilder()
+                            .setTitle("🏆 Lythrion Global Level Leaderboard")
+                            .setColor(0xFFD700)
+                            .setDescription(sb.toString())
+                            .setFooter("Top 10 Players");
+                    event.getHook().editOriginalEmbeds(eb.build()).queue();
+                })
+                .exceptionally(e -> {
+                    event.getHook().editOriginal("❌ Database Error: " + e.getMessage()).queue();
+                    return null;
+                });
     }
 
-    private void handleMaintenanceStatus(SlashCommandInteractionEvent event,
-                                         boolean admin,
-                                         Member member) {
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("🛠️ Lythrion Maintenance Overview")
-                .setColor(0xfacc15)
-                .setDescription(String.join("\n",
-                        "**Velocity (main):** " + maintenanceFlag(maintenanceManager.isMain()),
-                        "**Lobby:** " + maintenanceFlag(maintenanceManager.isLobby()),
-                        "**Citybuild:** " + maintenanceFlag(maintenanceManager.isCitybuild())
-                ))
-                .setTimestamp(Instant.now());
-
-        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
-
-        if (admin) {
-            sendDebugDm(member, "🧪 Debug `/maintenance status`");
-        }
-    }
-
-    private void handleMaintenanceSet(SlashCommandInteractionEvent event,
-                                      boolean admin,
-                                      Member member) {
-        if (!admin) {
-            event.reply("❌ You need **Administrator** permissions to change maintenance modes.")
-                    .setEphemeral(true).queue();
-            return;
-        }
-
-        String service = event.getOption("service").getAsString();
-        boolean enabled = event.getOption("enabled").getAsBoolean();
-
-        switch (service) {
-            case "main" -> maintenanceManager.setMain(enabled);
-            case "lobby" -> maintenanceManager.setLobby(enabled);
-            case "citybuild" -> maintenanceManager.setCitybuild(enabled);
-            default -> {
-                event.reply("❌ Unknown service `" + service + "`.").setEphemeral(true).queue();
-                return;
-            }
-        }
-
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("🛠️ Maintenance updated")
-                .setColor(enabled ? 0xfacc15 : 0x22c55e)
-                .setDescription(
-                        "Service **" + serviceName(service) + "** is now set to **" +
-                                (enabled ? "Maintenance" : "Active") + "**."
-                )
-                .setTimestamp(Instant.now());
-
-        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
-    }
-
-    private String maintenanceFlag(boolean active) {
-        return active ? "🟠 Maintenance" : "✅ Active";
-    }
-
-    private String serviceName(String key) {
-        return switch (key) {
-            case "main" -> "Velocity (main)";
-            case "lobby" -> "Lobby";
-            case "citybuild" -> "Citybuild";
-            default -> key;
-        };
-    }
-
-    /* ====================================================================== */
-    /* /botinfo – inkl. "Bot by Lyzrex" & MurmelAPI-DB-Ping                  */
-    /* ====================================================================== */
-
-    private void handleBotInfo(SlashCommandInteractionEvent event,
-                               boolean admin,
-                               Member member) {
-
-        long start = System.currentTimeMillis();
-
-        long wsPing = jda.getGatewayPing();
-        RuntimeMXBean runtime = ManagementFactory.getRuntimeMXBean();
-        long uptimeMs = runtime.getUptime();
-        String uptimeText = formatDuration(uptimeMs);
-        int guildCount = jda.getGuilds().size();
-
-        String networkName = ConfigManager.getString("network.name", "Lythrion Network");
-        String iconUrl = ConfigManager.getString(
-                "network.icon",
-                "https://api.mcstatus.io/v2/icon/lythrion.net"
-        );
-        String botVersion = ConfigManager.getString("bot.version", "0.0.2-beta1.13");
-
-        Runtime rt = Runtime.getRuntime();
-        long usedMem = rt.totalMemory() - rt.freeMemory();
-        String memText = String.format("Used: %.1f MB", usedMem / 1024.0 / 1024.0);
-
-        // DB-Ping (MurmelAPI DB) - Nutzt den korrigierten, sicheren Ping des Delegates
-        long murmelPing = databaseManager.ping();
-
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("🛰️ Bot Info & Diagnostics")
-                .setColor(0x00bcd4)
-                .setThumbnail(iconUrl)
-                .setDescription("Status und Metriken des **" + networkName + "** Bots.")
-                .addField(
-                        "🤖 Bot & Version",
-                        String.join("\n",
-                                "• **Version:** `" + botVersion + "`",
-                                "• **Guilds:** " + guildCount,
-                                "• **Owner:** Lyzrex"
-                        ),
-                        false
-                )
-                .addField(
-                        "📡 Runtime Diagnostics",
-                        String.join("\n",
-                                "• **Gateway Ping:** " + wsPing + "ms",
-                                "• **DB Ping:** " + (murmelPing >= 0 ? murmelPing + "ms" : "❌ N/A"),
-                                "• **Uptime:** " + uptimeText,
-                                "• **Memory:** " + memText
-                        ),
-                        false
-                )
-                .setFooter("Bot by Lyzrex")
-                .setTimestamp(Instant.now());
-
-        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
-    }
-
-    /* ====================================================================== */
-    /* /latency – Bot / DB / API Ping                                         */
-    /* ====================================================================== */
-
-    private void handleLatency(SlashCommandInteractionEvent event,
-                               boolean admin,
-                               Member member) {
-        long wsPing = jda.getGatewayPing();
-
-        long dbPing = databaseManager.ping();
-        long lythApiPing = statusService.pingStatusApi();
-        long mcStatusPing = statusService.pingExternalMcStatusApi();
-
-        long murmelPing = dbPing;
-
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("📶 Lythrion Latency Overview")
-                .setColor(0x22c55e)
-                .addField("Gateway (WS)", wsPing + "ms", true)
-                .addField("MurmelAPI (DB)", (murmelPing >= 0 ? murmelPing + "ms" : "❌ N/A"), true)
-                .addField("Lyth Status API", (lythApiPing >= 0 ? lythApiPing + "ms" : "❌ N/A"), true)
-                .addField("mcstatus.io", (mcStatusPing >= 0 ? mcStatusPing + "ms" : "❌ N/A"), true)
-                .setTimestamp(Instant.now());
-
-        event.replyEmbeds(eb.build()).setEphemeral(true).queue();
-    }
-
-    /* ====================================================================== */
-    /* /ticketpanel – GalaxyBot-Style Panel                                   */
-    /* ====================================================================== */
-
-    private void handleTicketPanel(SlashCommandInteractionEvent event, boolean admin) {
-        if (!admin) {
-            event.reply("❌ Only administrators may create the ticket panel.")
-                    .setEphemeral(true).queue();
-            return;
-        }
-        ticketService.sendTicketPanel(event);
-    }
-
-    /* ====================================================================== */
-    /* /profile – zieht Daten direkt aus der MurmelAPI                         */
-    /* ====================================================================== */
-
-    private void handleProfile(SlashCommandInteractionEvent event, boolean admin) {
+    private void handleProfile(SlashCommandInteractionEvent event) {
         String input = event.getOption("input").getAsString();
+        event.deferReply().queue(); // Verhindert Timeout
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                // 1. User finden
+                User user = userProvider.findByUsername(input);
+                if (user == null) {
+                    try { user = userProvider.findByMojangId(UUID.fromString(input)); } catch (Exception ignored) {}
+                }
+
+                if (user == null) {
+                    event.getHook().editOriginal("❌ Profile not found for `" + input + "`.").queue();
+                    return;
+                }
+
+                int userId = user.id();
+
+                // 2. Daten parallel abrufen
+                UserPlayTime playtime = playTimeProvider.findByUserId(userId);
+                double wallet = syntrixRepository.getBalance(userId);
+                SyntrixRepository.BankDetails bank = syntrixRepository.getBankDetails(userId);
+                SyntrixRepository.PlayerStats stats = syntrixRepository.getStats(userId);
+                SyntrixRepository.SkillStats skills = syntrixRepository.getSkillStats(userId);
+
+                // 3. Rang Logik (Höchste Priorität)
+                List<UserParent> parents = MurmelAPI.getUserParentProvider().getParents(userId);
+                Group highestGroup = null;
+
+                if (parents != null && !parents.isEmpty()) {
+                    highestGroup = parents.stream()
+                            .map(p -> groupProvider.findById(p.parentId()))
+                            .filter(Objects::nonNull)
+                            .max(Comparator.comparingInt(Group::priority))
+                            .orElse(null);
+                }
+
+                if (highestGroup == null) {
+                    highestGroup = groupProvider.findById(1); // Default
+                }
+
+                String groupName = (highestGroup != null) ? highestGroup.groupName() : "default";
+                groupName = groupName.substring(0, 1).toUpperCase() + groupName.substring(1);
+
+                // 4. Formatierung
+                long pTime = playtime != null ? playtime.getPlayTime() : 0;
+                String pTimeStr = formatDuration(pTime * 1000L);
+                String firstJoin = user.firstLogin() != null ? user.firstLogin().toString().split("T")[0] : "N/A";
+                int logins = playtime != null ? playtime.getLoginCount() : 0;
+
+                // 5. Embed bauen
+                EmbedBuilder eb = new EmbedBuilder()
+                        .setTitle("👤 Full Profile: " + user.username())
+                        .setColor(0x00bcd4)
+                        .setThumbnail("https://mc-heads.net/avatar/" + user.mojangId());
+
+                // General Section
+                eb.addField("📜 General",
+                        "**Rank:** " + groupName + "\n" +
+                                "**Playtime:** " + pTimeStr + "\n" +
+                                "**Logins:** " + logins + "\n" +
+                                "**First Join:** " + firstJoin, true);
+
+                // Economy Section
+                String bankInfo = (bank != null)
+                        ? String.format("Balance: %,.2f$\nLevel: %d\nStatus: %s\nLoan: %,.2f$",
+                        bank.balance(), bank.level(), bank.frozen() ? "FROZEN" : "Active", bank.loan())
+                        : "No Account";
+
+                eb.addField("💰 Economy",
+                        "**Wallet:** " + String.format("%,.2f$", wallet) + "\n" +
+                                "**Bank:**\n" + bankInfo, true);
+
+                // Combat Stats
+                double kd = (stats.deaths() == 0) ? stats.kills() : (double) stats.kills() / stats.deaths();
+                eb.addField("⚔️ Combat Stats",
+                        "**Kills:** " + stats.kills() + "\n" +
+                                "**Deaths:** " + stats.deaths() + "\n" +
+                                "**Mob Kills:** " + stats.mobKills() + "\n" +
+                                "**K/D Ratio:** " + String.format("%.2f", kd), true);
+
+                // Skills Section
+                eb.addField("🎓 Skills (Global Level: " + (int)skills.global() + ")",
+                        "⚔️ Combat: " + formatXp(skills.combat()) + "\n" +
+                                "⛏️ Mining: " + formatXp(skills.mining()) + "\n" +
+                                "🌾 Farming: " + formatXp(skills.farming()) + "\n" +
+                                "🪓 Foraging: " + formatXp(skills.foraging()) + "\n" +
+                                "🎣 Fishing: " + formatXp(skills.fishing()) + "\n" +
+                                "✨ Enchanting: " + formatXp(skills.enchanting()) + "\n" +
+                                "🏹 Archery: " + formatXp(skills.archery()), false);
+
+                eb.setFooter("ID: " + user.id() + " | UUID: " + user.mojangId());
+
+                event.getHook().editOriginalEmbeds(eb.build()).queue();
+
+            } catch (Exception e) {
+                event.getHook().editOriginal("❌ Error loading profile (DB): " + e.getMessage()).queue();
+                e.printStackTrace();
+            }
+        });
+    }
+
+    private void handleClear(SlashCommandInteractionEvent event, Member member) {
+        if (!member.hasPermission(Permission.MESSAGE_MANAGE)) {
+            event.reply("❌ No permission.").setEphemeral(true).queue();
+            return;
+        }
+        int amount = event.getOption("amount").getAsInt();
+        if (amount < 1 || amount > 100) {
+            event.reply("❌ Amount must be between 1 and 100.").setEphemeral(true).queue();
+            return;
+        }
+        event.getChannel().getIterableHistory().takeAsync(amount).thenAccept(event.getChannel()::purgeMessages);
+        event.reply("✅ Deleted " + amount + " messages.").setEphemeral(true).queue();
+    }
+
+    private void handleKick(SlashCommandInteractionEvent event, Member moderator) {
+        if (!moderator.hasPermission(Permission.KICK_MEMBERS)) {
+            event.reply("❌ No permission.").setEphemeral(true).queue();
+            return;
+        }
+        Member target = event.getOption("user").getAsMember();
+        String reason = event.getOption("reason") != null ? event.getOption("reason").getAsString() : "No reason provided";
+
+        if (target == null) {
+            event.reply("❌ User not found.").setEphemeral(true).queue();
+            return;
+        }
+        if (!moderator.canInteract(target)) {
+            event.reply("❌ You cannot kick this user.").setEphemeral(true).queue();
+            return;
+        }
+
+        target.kick(reason).queue(
+                success -> event.reply("✅ Kicked **" + target.getUser().getAsTag() + "** | Reason: " + reason).queue(),
+                error -> event.reply("❌ Failed to kick user.").setEphemeral(true).queue()
+        );
+    }
+
+    private void handleTimeout(SlashCommandInteractionEvent event, Member moderator) {
+        if (!moderator.hasPermission(Permission.MODERATE_MEMBERS)) {
+            event.reply("❌ No permission.").setEphemeral(true).queue();
+            return;
+        }
+        Member target = event.getOption("user").getAsMember();
+        String durationStr = event.getOption("duration").getAsString();
+        String reason = event.getOption("reason") != null ? event.getOption("reason").getAsString() : "No reason";
+
+        if (target == null) {
+            event.reply("❌ User not found.").setEphemeral(true).queue();
+            return;
+        }
+
+        long seconds = TimeUtil.parseDurationInSeconds(durationStr);
+        if (seconds <= 0) {
+            event.reply("❌ Invalid duration (e.g., 10m, 1h).").setEphemeral(true).queue();
+            return;
+        }
+
+        target.timeoutFor(Duration.ofSeconds(seconds)).reason(reason).queue(
+                success -> event.reply("✅ Timeout for **" + target.getUser().getAsTag() + "** (" + durationStr + ")").queue(),
+                error -> event.reply("❌ Failed to timeout user.").setEphemeral(true).queue()
+        );
+    }
+
+    private void handleAnnounce(SlashCommandInteractionEvent event, boolean admin) {
+        if (!admin) {
+            event.reply("❌ Only admins.").setEphemeral(true).queue();
+            return;
+        }
+        String msg = event.getOption("message").getAsString().replace("\\n", "\n");
+        var chOption = event.getOption("channel");
+
+        TextChannel channel;
+        if (chOption != null) {
+            channel = chOption.getAsChannel().asTextChannel();
+        } else {
+            String announceId = ConfigManager.getString("channels.announcements", "0");
+            channel = event.getGuild().getTextChannelById(announceId);
+        }
+
+        if (channel == null) {
+            event.reply("❌ Target channel not found or not configured.").setEphemeral(true).queue();
+            return;
+        }
+
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("📢 Announcement")
+                .setDescription(msg)
+                .setColor(0x0099ff)
+                .setTimestamp(Instant.now());
+
+        channel.sendMessageEmbeds(eb.build()).queue();
+        event.reply("✅ Announcement sent to " + channel.getAsMention()).setEphemeral(true).queue();
+    }
+
+    private void handleSuggest(SlashCommandInteractionEvent event) {
+        String idea = event.getOption("idea").getAsString();
+        String channelId = ConfigManager.getString("channels.suggestions", "0");
+        TextChannel channel = event.getGuild().getTextChannelById(channelId);
+
+        if (channel == null) {
+            event.reply("❌ Suggestion channel not configured.").setEphemeral(true).queue();
+            return;
+        }
+
+        EmbedBuilder eb = new EmbedBuilder()
+                .setAuthor(event.getUser().getAsTag(), null, event.getUser().getEffectiveAvatarUrl())
+                .setTitle("💡 New Suggestion")
+                .setDescription(idea)
+                .setColor(0xfacc15)
+                .setFooter("User ID: " + event.getUser().getId())
+                .setTimestamp(Instant.now());
+
+        channel.sendMessageEmbeds(eb.build()).queue(msg -> {
+            msg.addReaction(Emoji.fromUnicode("👍")).queue();
+            msg.addReaction(Emoji.fromUnicode("👎")).queue();
+        });
+        event.reply("✅ Suggestion submitted!").setEphemeral(true).queue();
+    }
+
+    private void handleFeedback(SlashCommandInteractionEvent event) {
+        String text = event.getOption("text").getAsString();
+        String channelId = ConfigManager.getString("channels.feedback", "0");
+        TextChannel channel = event.getGuild().getTextChannelById(channelId);
+
+        if (channel == null) {
+            event.reply("❌ Feedback channel not configured.").setEphemeral(true).queue();
+            return;
+        }
+
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("📝 Feedback Received")
+                .setDescription(text)
+                .setColor(0x9b59b6)
+                .setFooter("From: " + event.getUser().getAsTag());
+
+        channel.sendMessageEmbeds(eb.build()).queue();
+        event.reply("✅ Thank you for your feedback!").setEphemeral(true).queue();
+    }
+
+    private void handlePunishMinecraft(SlashCommandInteractionEvent event, boolean admin) {
+        if (!admin) {
+            event.reply("❌ Admins only.").setEphemeral(true).queue();
+            return;
+        }
+
+        String targetName = event.getOption("player").getAsString();
+        String typeStr = event.getOption("type").getAsString().toUpperCase();
+        String reasonText = event.getOption("reason").getAsString();
+        String durStr = event.getOption("duration") != null ? event.getOption("duration").getAsString() : null;
 
         event.deferReply().queue();
 
-        // 1. MurmelAPI User abrufen
-        User user = userProvider.findByUsername(input);
-        if (user == null) {
+        CompletableFuture.runAsync(() -> {
             try {
-                if (input.length() >= 36) {
-                    user = userProvider.findByMojangId(UUID.fromString(input));
+                User user = userProvider.findByUsername(targetName);
+                if (user == null) {
+                    event.getHook().editOriginal("❌ Player `" + targetName + "` not found in database.").queue();
+                    return;
                 }
-            } catch (IllegalArgumentException ignored) {}
-        }
 
-        if (user == null) {
-            event.getHook().editOriginal("❌ No profile found for `" + input + "`.").queue();
-            return;
-        }
+                PunishmentType type;
+                try {
+                    type = PunishmentType.valueOf(typeStr);
+                } catch (IllegalArgumentException e) {
+                    event.getHook().editOriginal("❌ Invalid punishment type. Use BAN, MUTE, KICK.").queue();
+                    return;
+                }
 
-        // 2. PlayTime-Daten abrufen
-        UserPlayTime playtime = playTimeProvider.findByUserId(user.id());
+                long duration = -1; // Permanent
+                if (durStr != null) {
+                    duration = TimeUtil.parseDurationInSeconds(durStr);
+                    if (duration <= 0) {
+                        event.getHook().editOriginal("❌ Invalid duration format (e.g. 1d, 12h).").queue();
+                        return;
+                    }
+                }
 
-        // 3. Gruppeninformationen abrufen (Annahme: ID 1 ist die primäre Gruppe oder Standardgruppe)
-        Group primaryGroup = groupProvider.findById(1);
+                // Random ID Generation to prevent duplicates
+                int reasonId = (int) (System.currentTimeMillis() / 1000) + ThreadLocalRandom.current().nextInt(1000, 9999);
 
-        // 4. Daten formatieren
-        String firstLoginText = (user.firstLogin() != null)
-                ? formatLocalDateTime(user.firstLogin())
-                : "N/A";
+                var reasonObj = MurmelAPI.getPunishmentReasonProvider().create(
+                        reasonId,
+                        type.getId(),
+                        reasonText,
+                        (duration == -1 ? null : duration),
+                        type.isIpType(),
+                        true,
+                        -1 // Console/System ID
+                );
 
-        long totalPlayTimeSeconds = (playtime != null) ? playtime.getPlayTime() : 0L;
-        int loginCount = (playtime != null) ? playtime.getLoginCount() : 0;
-        String formattedPlaytime = formatDuration(totalPlayTimeSeconds * 1000L);
+                if (reasonObj == null) {
+                    event.getHook().editOriginal("❌ Failed to create punishment reason object in DB.").queue();
+                    return;
+                }
 
-        String groupName = (primaryGroup != null) ? primaryGroup.groupName() : "Guest";
-        String langCode = formatLanguageId(user.languageId());
+                punishmentService.punishedUser(user.id(), reasonObj.id(), -1);
+                String durTxt = duration == -1 ? "Permanent" : durStr;
+                EmbedBuilder eb = new EmbedBuilder()
+                        .setTitle("⚖️ Punishment Applied")
+                        .setColor(0xef4444)
+                        .addField("Player", user.username(), true)
+                        .addField("Type", type.getName(), true)
+                        .addField("Reason", reasonText, false)
+                        .addField("Duration", durTxt, true)
+                        .setTimestamp(Instant.now());
+                event.getHook().editOriginalEmbeds(eb.build()).queue();
 
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("👤 Player Profile: " + user.username())
-                .setColor(0x00bcd4) // Neutrale Farbe
-                .setDescription("### MurmelAPI User ID: `" + user.id() + "`\n" +
-                        "**UUID:** `" + user.mojangId().toString() + "`")
-
-                // --- Datenblock 1: Eckdaten & Gruppe ---
-                .addField("⭐ Eckdaten",
-                        String.join("\n",
-                                "• **Gruppe:** `" + groupName + "`",
-                                "• **Erster Login:** " + firstLoginText,
-                                "• **Sprache:** `" + langCode + "`"
-                        ),
-                        true)
-
-                // --- Datenblock 2: Spielstatistiken ---
-                .addField("📈 Spielstatistiken",
-                        String.join("\n",
-                                "• **Spielzeit:** " + formattedPlaytime,
-                                "• **Login-Zähler:** `" + loginCount + "`"
-                        ),
-                        true)
-
-                // --- Debug/Admin Block (Nicht Inline für saubere Trennung) ---
-                .addField("\u200B", "\u200B", false) // Leere Trennung
-                .addField("⚙️ Debug-Status",
-                        String.join("\n",
-                                "• **Debug User:** " + (user.debugUser() ? "Ja" : "Nein"),
-                                "• **Debug Enabled:** " + (user.debugEnabled() ? "🟢 Aktiv" : "⚪ Off")
-                        ),
-                        false)
-                .setFooter("Daten powered by MurmelAPI")
-                .setTimestamp(Instant.now());
-
-        event.getHook().editOriginalEmbeds(eb.build()).queue();
+            } catch (Exception e) {
+                event.getHook().editOriginal("❌ Error applying punishment: " + e.getMessage()).queue();
+                e.printStackTrace();
+            }
+        });
     }
 
-    /* ====================================================================== */
-    /* /language [choice]                                                     */
-    /* ====================================================================== */
+    // --- OTHER HANDLERS ---
+
+    private void handleStatus(SlashCommandInteractionEvent event) {
+        long start = System.currentTimeMillis();
+        event.deferReply().queue();
+
+        CompletableFuture<ServiceStatus> mainF = CompletableFuture.supplyAsync(statusService::fetchMainStatus);
+        CompletableFuture<ServiceStatus> lobF = CompletableFuture.supplyAsync(statusService::fetchLobbyStatus);
+        CompletableFuture<ServiceStatus> cbF = CompletableFuture.supplyAsync(statusService::fetchCitybuildStatus);
+
+        CompletableFuture.allOf(mainF, lobF, cbF).orTimeout(10, TimeUnit.SECONDS).whenComplete((v, ex) -> {
+            if (ex != null) {
+                event.getHook().editOriginal("❌ Timeout fetching status.").queue();
+                return;
+            }
+            ServiceStatus m = mainF.join();
+            ServiceStatus l = lobF.join();
+            ServiceStatus c = cbF.join();
+
+            statusService.updatePresenceFromData(jda, m, l, c);
+            event.getHook().editOriginalEmbeds(statusService.buildStatusEmbed(m, l, c)).queue();
+        });
+    }
+
+    private void handleMaintenance(SlashCommandInteractionEvent event, boolean admin) {
+        if ("status".equals(event.getSubcommandName())) {
+            event.reply("Maintenance Status: Main=" + maintenanceManager.isMain()).setEphemeral(true).queue();
+        } else if ("set".equals(event.getSubcommandName()) && admin) {
+            String s = event.getOption("service").getAsString();
+            boolean b = event.getOption("enabled").getAsBoolean();
+            if (s.equals("main")) maintenanceManager.setMain(b);
+            else if (s.equals("lobby")) maintenanceManager.setLobby(b);
+            else if (s.equals("citybuild")) maintenanceManager.setCitybuild(b);
+            event.reply("✅ Maintenance for " + s + " set to " + b).setEphemeral(true).queue();
+        } else {
+            event.reply("❌ Invalid subcommand or no permission.").setEphemeral(true).queue();
+        }
+    }
+
+    private void handleBotInfo(SlashCommandInteractionEvent event) {
+        long ram = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1024 / 1024;
+        event.replyEmbeds(new EmbedBuilder().setTitle("🤖 Bot Info").addField("RAM", ram + " MB", true).addField("Ping", jda.getGatewayPing() + "ms", true).build()).setEphemeral(true).queue();
+    }
+
+    private void handleTicketPanel(SlashCommandInteractionEvent event, boolean admin) {
+        if (admin) ticketService.sendTicketPanel(event);
+        else event.reply("❌ Admins only.").setEphemeral(true).queue();
+    }
+
+    private void handleGroup(SlashCommandInteractionEvent event) {
+        String name = event.getOption("name").getAsString();
+        Group g = groupProvider.findByName(name);
+        if (g == null) event.reply("❌ Group not found.").setEphemeral(true).queue();
+        else event.reply("Group: " + g.groupName() + " (ID: " + g.id() + ")").setEphemeral(true).queue();
+    }
 
     private void handleLanguage(SlashCommandInteractionEvent event) {
         String choice = event.getOption("choice").getAsString();
-
         Optional<Language> targetLang = Language.fromString(choice);
 
         if (targetLang.isEmpty()) {
-            event.reply("❌ Ungültige Sprachauswahl. Verfügbar: English, Deutsch.").setEphemeral(true).queue();
+            event.reply("❌ Invalid choice.").setEphemeral(true).queue();
             return;
         }
 
         User user = userProvider.findByUsername(event.getUser().getName());
-        int userId = user != null ? user.id() : -1;
-
-        if (userId == -1 || user == null) {
-            event.reply("❌ Dein Minecraft/MurmelAPI-Account konnte nicht gefunden werden. Bitte verbinde deinen Account zuerst.").setEphemeral(true).queue();
-            return;
-        }
-
-        boolean success = languageService.setLanguage(userId, targetLang.get());
-
-        if (success) {
-            String langCode = targetLang.get().name().equalsIgnoreCase("DE") ? "Deutsch (`de-DE`)" : "English (`en-US`)";
-            event.reply("✅ Die Sprache wurde auf **" + langCode + "** umgestellt.").setEphemeral(true).queue();
+        if (user != null) {
+            languageService.setLanguage(user.id(), targetLang.get());
+            event.reply("✅ Language set to " + targetLang.get().name()).setEphemeral(true).queue();
         } else {
-            event.reply("❌ Fehler beim Speichern der Sprache. Konnte MurmelAPI nicht aktualisieren.").setEphemeral(true).queue();
+            event.reply("❌ Please link your Minecraft account first (Same username required).").setEphemeral(true).queue();
         }
     }
-
-
-    /* ====================================================================== */
-    /* /rps – Rock Paper Scissors (RPS) Game                                  */
-    /* ====================================================================== */
-
-    private void handleRps(SlashCommandInteractionEvent event) {
-        String sub = event.getSubcommandName();
-        if (sub == null) {
-            event.reply("❌ Unknown rps subcommand.")
-                    .setEphemeral(true).queue();
-            return;
-        }
-
-        switch (sub) {
-            case "play" -> gameService.handleRpsPlay(event);
-            case "stats" -> gameService.handleRpsStats(event);
-            case "top" -> gameService.handleRpsTop(event);
-            default -> event.reply("❌ Unknown rps subcommand.")
-                    .setEphemeral(true).queue();
-        }
-    }
-
-    /* ====================================================================== */
-    /* /roll – Dice Game                                                      */
-    /* ====================================================================== */
-
-    private void handleRoll(SlashCommandInteractionEvent event) {
-        gameService.handleDiceRoll(event);
-    }
-
-    /* ====================================================================== */
-    /* /group – MurmelAPI Group Info                                          */
-    /* ====================================================================== */
-
-    private void handleGroup(SlashCommandInteractionEvent event, boolean admin) {
-        String groupName = event.getOption("name").getAsString();
-        event.deferReply().queue();
-
-        Group group = groupProvider.findByName(groupName);
-
-        if (group == null) {
-            event.getHook().editOriginal("❌ Gruppe mit dem Namen `" + groupName + "` wurde nicht gefunden.").queue();
-            return;
-        }
-
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("🏷️ MurmelAPI Gruppe: " + group.groupName())
-                .setColor(0x00bcd4)
-                .setDescription("Detaillierte Informationen zur Gruppe **" + group.groupName() + "**.")
-                .addField("ID", String.valueOf(group.id()), true)
-                .addField("Priorität", String.valueOf(group.priority()), true)
-                .addField("Standardgruppe", group.isDefault() ? "🟢 Ja" : "⚪ Nein", true)
-                .addField("Erstellt von (ID)", String.valueOf(group.createdBy()), true)
-                .addField("Erstellt am", formatLocalDateTime(group.createdAt()), true)
-                .setFooter("Daten powered by MurmelAPI")
-                .setTimestamp(Instant.now());
-
-        event.getHook().editOriginalEmbeds(eb.build()).queue();
-    }
-
-    /* ====================================================================== */
-    /* /punishment – Subcommand Handler                                       */
-    /* ====================================================================== */
-
-    private void handlePunishment(SlashCommandInteractionEvent event, boolean admin) {
-        if (!admin) {
-            event.reply("❌ Nur Administratoren dürfen diesen Befehl verwenden.")
-                    .setEphemeral(true).queue();
-            return;
-        }
-
-        String sub = event.getSubcommandName();
-        if (sub == null) return;
-
-        switch (sub) {
-            case "history" -> handlePunishmentHistory(event);
-            case "list" -> handlePunishmentList(event);
-            default -> event.reply("❌ Unbekanntes Punishment Subkommando.").setEphemeral(true).queue();
-        }
-    }
-
-    /* ====================================================================== */
-    /* /punishment history – MurmelAPI Punishment Audit                       */
-    /* ====================================================================== */
-
-    private void handlePunishmentHistory(SlashCommandInteractionEvent event) {
-        String input = event.getOption("query").getAsString(); // Minecraft Name oder UUID
-        event.deferReply().queue();
-
-        // 1. User anhand des Inputs finden (MurmelAPI)
-        User user = userProvider.findByUsername(input);
-        if (user == null) {
-            try {
-                if (input.length() >= 36) {
-                    user = userProvider.findByMojangId(UUID.fromString(input));
-                }
-            } catch (IllegalArgumentException ignored) {}
-        }
-
-
-        if (user == null) {
-            event.getHook().editOriginal("❌ MurmelAPI User für `" + input + "` nicht gefunden.").queue();
-            return;
-        }
-
-        // 2. Punishment Logs abrufen (Zuletzt 10 Logs)
-        int userId = user.id();
-        List<PunishmentLog> logs = punishmentLogProvider.getLogsByUserId(userId);
-
-
-        if (logs.isEmpty()) {
-            event.getHook().editOriginal("✅ Keine Punishment-Einträge für **" + user.username() + "** gefunden.").queue();
-            return;
-        }
-
-        StringBuilder sb = new StringBuilder();
-        logs.stream().limit(10).forEach(log -> {
-            PunishmentType type = PunishmentType.fromId(log.reasonTypeId());
-            String typeName = type != null ? type.getName() : "Unbekannt";
-            String duration = log.isPermanent() ? "Permanent" : formatDuration(log.reasonDuration() * 1000L); // MurmelAPI gibt Sekunden aus
-
-            sb.append("`").append(log.id().toString().substring(0, 8)).append("` | ")
-                    .append("**Aktion:** ").append(log.action().name()).append(" | ")
-                    .append("**Typ:** ").append(typeName).append(" (Dauer: ").append(duration).append(")\n")
-                    .append("   **Grund:** ").append(log.reasonText()).append("\n");
-        });
-
-        EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("📜 Punishment History für " + user.username())
-                .setColor(0xef4444)
-                .setDescription(sb.toString())
-                .setFooter("Zeigt die letzten 10 Einträge an")
-                .setTimestamp(Instant.now());
-
-        event.getHook().editOriginalEmbeds(eb.build()).queue();
-    }
-
-    /* ====================================================================== */
-    /* /punishment list (Platzhalter)                                         */
-    /* ====================================================================== */
-
-    private void handlePunishmentList(SlashCommandInteractionEvent event) {
-        String type = event.getOption("type").getAsString(); // BAN, MUTE, WARN
-        PunishmentType punishmentType = PunishmentType.valueOf(type);
-
-        event.deferReply().queue();
-
-        // Da die genaue API-Methode unbekannt ist, verwenden wir einen Platzhalter:
-        event.getHook().editOriginalFormat("Listet die aktiven Bestrafungen vom Typ **%s** auf (To be fully implemented).", punishmentType.name()).queue();
-    }
-
-    /* ====================================================================== */
-    /* Ticket-Events (SelectMenu / Button)                                    */
-    /* ====================================================================== */
 
     @Override
     public void onStringSelectInteraction(StringSelectInteractionEvent event) {
-        handleTicketSelect(event);
+        ticketService.handleCategorySelect(event);
     }
 
     @Override
     public void onButtonInteraction(ButtonInteractionEvent event) {
-        handleTicketClose(event);
-    }
-
-    public void handleTicketSelect(StringSelectInteractionEvent event) {
-        ticketService.handleCategorySelect(event);
-    }
-
-    public void handleTicketClose(ButtonInteractionEvent event) {
         ticketService.handleCloseButton(event);
     }
 
-    /* ====================================================================== */
-    /* Helper Methoden                                                        */
-    /* ====================================================================== */
-
-    private void sendDebugDm(Member member, String msg) {
-        if (member == null) return;
-        member.getUser()
-                .openPrivateChannel()
-                .queue(ch -> ch.sendMessage(msg).queue(), err -> {});
-    }
-
-    // Formatierung für Spielzeit (z.B. 1d 5h 30m)
     private String formatDuration(long ms) {
-        long totalSeconds = ms / 1000;
-        long days = totalSeconds / 86400;
-        totalSeconds %= 86400;
-        long hours = totalSeconds / 3600;
-        totalSeconds %= 3600;
-        long minutes = totalSeconds / 60;
-        long seconds = totalSeconds % 60;
-
-        StringBuilder sb = new StringBuilder();
-        if (days > 0) sb.append(days).append("d ");
-        if (hours > 0 || sb.length() > 0) sb.append(hours).append("h ");
-        if (minutes > 0 || sb.length() > 0) sb.append(minutes).append("m ");
-        sb.append(seconds).append("s");
-        return sb.toString().trim();
+        long s = ms / 1000;
+        return String.format("%d:%02d:%02d", s / 3600, (s % 3600) / 60, (s % 60));
     }
 
-    // Formatierung für Datum und Uhrzeit (z.B. 11.12.2025 18:20:43)
-    private String formatLocalDateTime(LocalDateTime dateTime) {
-        if (dateTime == null) return "N/A";
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss");
-        return dateTime.format(formatter);
-    }
-
-    // Abruf des Sprachcodes aus der MurmelAPI (mit Fallback, da getLanguageCode() unbekannt ist)
-    private String formatLanguageId(int languageId) {
-        de.murmelmeister.murmelapi.language.Language murmelLang = languageProvider.findById(languageId);
-
-        if (murmelLang != null) {
-            // ANNAHME: Wir haben keinen Zugriff auf die tatsächliche Methode (getLanguageCode/getCode).
-            // Wir geben einen Fallback zurück, um den Fehler zu vermeiden.
-            return "ID: " + languageId + " (Resolved)";
-        }
-
-        // Fallback, wenn Provider keine Daten liefert
-        return "ID: " + languageId;
+    private String formatXp(double xp) {
+        return String.format("%,.0f XP", xp);
     }
 }

@@ -12,13 +12,13 @@ public class DatabaseManager {
     }
 
     /**
-     * Gibt die zentrale MurmelLib Database Instanz zurück, die mit HikariCP verbunden ist.
+     * Gibt die zentrale MurmelLib Database Instanz zurück.
      */
     public Database getDatabase() {
         return MurmelAPI.getDatabase();
     }
 
-    // --- Legacy-Methoden, die nun eine Ausnahme werfen oder delegieren ---
+    // --- Legacy-Methoden ---
 
     @Deprecated
     public Connection getConnection() throws SQLException {
@@ -38,11 +38,13 @@ public class DatabaseManager {
     public long ping() {
         long start = System.currentTimeMillis();
         try {
-            // Führt eine einfache, transaktionale Abfrage über MurmelLib Database durch.
-            MurmelAPI.getDatabase().update("SELECT 1");
+            // FIX: "exists" statt "update" verwenden, da SELECT kein Update ist!
+            // Das behebt den "Timeout" Fehler im /latency Command.
+            MurmelAPI.getDatabase().exists("SELECT 1", null);
             return System.currentTimeMillis() - start;
-        } catch (Exception ignored) {
-            return -1L; // Fehler bei Verbindung/Abfrage
+        } catch (Exception e) {
+            e.printStackTrace(); // Zeigt Fehler in der Konsole, falls es immer noch fehlschlägt
+            return -1L;
         }
     }
 }

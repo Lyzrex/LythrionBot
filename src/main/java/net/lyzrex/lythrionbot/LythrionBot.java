@@ -12,14 +12,15 @@ import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.lyzrex.lythrionbot.command.CommandListener;
 import net.lyzrex.lythrionbot.db.DatabaseManager;
+import net.lyzrex.lythrionbot.db.SyntrixRepository;
 import net.lyzrex.lythrionbot.game.GameScoreRepository;
 import net.lyzrex.lythrionbot.game.GameService;
 import net.lyzrex.lythrionbot.i18n.Messages;
+import net.lyzrex.lythrionbot.language.LanguageService;
 import net.lyzrex.lythrionbot.profile.UserProfileRepository;
 import net.lyzrex.lythrionbot.status.MaintenanceManager;
 import net.lyzrex.lythrionbot.status.StatusService;
 import net.lyzrex.lythrionbot.ticket.TicketService;
-import net.lyzrex.lythrionbot.language.LanguageService;
 
 import de.murmelmeister.murmelapi.MurmelAPI;
 import de.murmelmeister.murmelapi.punishment.PunishmentService;
@@ -29,9 +30,10 @@ import de.murmelmeister.murmelapi.group.GroupProvider;
 import de.murmelmeister.murmelapi.user.UserProvider;
 import de.murmelmeister.murmelapi.user.UserService;
 import de.murmelmeister.murmelapi.user.playtime.UserPlayTimeProvider;
+import de.murmelmeister.library.database.Database;
 
+import java.io.InputStream;
 import java.util.Properties;
-
 
 public final class LythrionBot {
 
@@ -39,69 +41,76 @@ public final class LythrionBot {
     }
 
     public static void main(String[] args) throws Exception {
-        // ---- Config + messages ----
+
+        // --- 1. Konfiguration & Token ---
         ConfigManager.load();
         Messages.load();
 
-        // ---- Token aus ENV /.env ----
         String token = Env.get("BOT_TOKEN");
-        if (token == null || token.isBlank() || token.equalsIgnoreCase("dein_discord_token")) {
-            System.err.println("BOT_TOKEN missing or invalid (check .env or environment).");
+        if (token == null || token.isBlank()) {
+            System.err.println("BOT_TOKEN missing in .env file.");
             return;
         }
 
+        // --- 2. Datenbankverbindung (MurmelAPI) ---
+        Properties dbProperties = new Properties();
+        String propertiesFileName = "database.properties";
 
-        try {
-
-            MurmelAPI.connect("database.properties");
-
-
-            MurmelAPI.initProviders();
-            System.out.println("MurmelAPI initialized successfully from database.properties.");
+        try (InputStream in = LythrionBot.class.getClassLoader().getResourceAsStream(propertiesFileName)) {
+            if (in == null) {
+                System.err.println("File 'database.properties' not found in resources.");
+                return;
+            }
+            dbProperties.load(in);
+            dbProperties.setProperty("maximumPoolSize", "10");
         } catch (Exception e) {
-            System.err.println("Failed to initialize MurmelAPI! Check database connection details in config.");
             e.printStackTrace();
             return;
         }
 
-        // -------------------------------------------------------------
+        try {
+            MurmelAPI.connect(dbProperties);
+            System.out.println("MurmelAPI initialized.");
+        } catch (Exception e) {
+            System.err.println("Failed to connect to database!");
+            e.printStackTrace();
+            return;
+        }
 
-        // ---- DB (Wird für lokale Tabellen/Spiele/Tickets verwendet) ----
-        DatabaseManager databaseManager = new DatabaseManager();
+        // --- 3. Abhängigkeiten (Services & Repositories) ---
 
-        // ---- Maintenance-Flags aus config.yml ----
+        Database murmelDatabase = MurmelAPI.getDatabase();
+        DatabaseManager databaseManager = new DatabaseManager(); // Wrapper
+
         MaintenanceManager maintenanceManager = new MaintenanceManager();
-
-        // ---- Services ----
         StatusService statusService = new StatusService(maintenanceManager);
-        UserProfileRepository userRepo = new UserProfileRepository(databaseManager.getDatabase());
 
-        GameScoreRepository gameScoreRepo = new GameScoreRepository(databaseManager.getDatabase());
-        GameService gameService = new GameService(gameScoreRepo);
-
-        // MurmelAPI Services abrufen
+        // MurmelAPI Providers
+        UserProvider userProvider = MurmelAPI.getUserProvider();
+        PunishmentCurrentUserProvider punishmentCurrentUserProvider = MurmelAPI.getPunishmentCurrentUserProvider();
         PunishmentService punishmentService = MurmelAPI.getPunishmentService();
         GroupProvider groupProvider = MurmelAPI.getGroupProvider();
         PunishmentLogProvider punishmentLogProvider = MurmelAPI.getPunishmentLogProvider();
-        PunishmentCurrentUserProvider punishmentCurrentUserProvider = MurmelAPI.getPunishmentCurrentUserProvider();
-        UserProvider userProvider = MurmelAPI.getUserProvider();
         UserService userService = MurmelAPI.getUserService();
         UserPlayTimeProvider playTimeProvider = MurmelAPI.getUserPlayTimeProvider();
 
-        // Lokaler Service, der MurmelAPI intern nutzen kann
-        LanguageService languageService = new LanguageService();
+        // Custom Services
+        UserProfileRepository userRepo = new UserProfileRepository(murmelDatabase);
+        SyntrixRepository syntrixRepo = new SyntrixRepository(murmelDatabase);
+        GameScoreRepository gameScoreRepo = new GameScoreRepository(murmelDatabase);
 
-        String ticketCategoryId = ConfigManager.getString("tickets.category_id", "0");
-        String ticketStaffRoleId = ConfigManager.getString("tickets.staff_role_id", "0");
-        String ticketLogChannelId = ConfigManager.getString("tickets.log_channel_id", "0");
+        // HIER WIRD DER LANGUAGE SERVICE ERSTELLT (mit userProvider)
+        LanguageService languageService = new LanguageService(userProvider);
+
+        GameService gameService = new GameService(gameScoreRepo, userProvider);
 
         TicketService ticketService = new TicketService(
-                ticketCategoryId,
-                ticketStaffRoleId,
-                ticketLogChannelId
+                ConfigManager.getString("tickets.categoryId", "0"),
+                ConfigManager.getString("tickets.staffRoleId", "0"),
+                ConfigManager.getString("tickets.logChannelId", "0")
         );
 
-        // ---- JDA ----
+        // --- 4. JDA Build ---
         JDABuilder builder = JDABuilder.createDefault(token)
                 .enableIntents(
                         GatewayIntent.GUILD_MESSAGES,
@@ -113,10 +122,8 @@ public final class LythrionBot {
 
         JDA jda = builder.build().awaitReady();
 
-        // ---- Slash-Commands registrieren ----
-
+        // --- 5. Slash Commands Registrierung ---
         CommandData statusCmd = Commands.slash("status", "Shows the status of the Lythrion.net network");
-
         CommandData maintenanceCmd = Commands.slash("maintenance", "View or change maintenance modes")
                 .addSubcommands(
                         new SubcommandData("status", "Show current maintenance state"),
@@ -129,71 +136,58 @@ public final class LythrionBot {
                                         new OptionData(OptionType.BOOLEAN, "enabled", "Enable maintenance?", true)
                                 )
                 );
-
         CommandData botInfoCmd = Commands.slash("botinfo", "Shows technical information about the bot");
-
-        CommandData profileCmd = Commands.slash("profile", "Show a MurmelAPI player profile")
-                .addOptions(
-                        new OptionData(OptionType.STRING, "input", "Minecraft name or UUID", true)
-                );
-
         CommandData latencyCmd = Commands.slash("latency", "Show gateway, database and API latency");
+        CommandData ticketCmd = Commands.slash("ticketpanel", "Post the ticket panel message (admin only)");
 
-        CommandData ticketPanelCmd = Commands.slash("ticketpanel", "Post the ticket panel message (admin only)");
+        CommandData profileCmd = Commands.slash("profile", "Show a player profile")
+                .addOptions(new OptionData(OptionType.STRING, "input", "Minecraft name or UUID", true));
 
         CommandData rpsCmd = Commands.slash("rps", "Rock Paper Scissors")
                 .addSubcommands(
                         new SubcommandData("play", "Play a round against the bot")
-                                .addOptions(
-                                        new OptionData(OptionType.STRING, "choice", "Your move", true)
-                                                .addChoice("Rock", "rock")
-                                                .addChoice("Paper", "paper")
-                                                .addChoice("Scissors", "scissors")
-                                ),
+                                .addOptions(new OptionData(OptionType.STRING, "choice", "Your move", true).addChoice("Rock", "rock").addChoice("Paper", "paper").addChoice("Scissors", "scissors")),
                         new SubcommandData("stats", "Show your RPS statistics"),
                         new SubcommandData("top", "Show the RPS leaderboard")
                 );
+        CommandData rollCmd = Commands.slash("roll", "Roll a dice and bet against the bot").addOptions(new OptionData(OptionType.INTEGER, "betrag", "The amount you want to bet", true));
 
-        CommandData rollCmd = Commands.slash("roll", "Roll a dice and bet against the bot")
-                .addOptions(new OptionData(OptionType.INTEGER, "betrag", "The amount you want to bet", true));
-
-        CommandData groupCmd = Commands.slash("group", "Show MurmelAPI group information")
-                .addOptions(new OptionData(OptionType.STRING, "name", "The group name", true));
-
-        CommandData punishmentCmd = Commands.slash("punishment", "Admin command for punishment history/management")
-                .addSubcommands(
-                        new SubcommandData("history", "Show a user's punishment history (last 10 logs)")
-                                .addOptions(new OptionData(OptionType.STRING, "query", "Minecraft name or UUID", true)),
-                        new SubcommandData("list", "List active punishments by type (ban/mute/warn)")
-                                .addOptions(new OptionData(OptionType.STRING, "type", "Punishment type", true)
-                                        .addChoice("BAN", "BAN")
-                                        .addChoice("MUTE", "MUTE")
-                                        .addChoice("WARN", "WARN"))
+        // Admin
+        CommandData punishCmd = Commands.slash("punish", "Punish a Minecraft player (Ban/Mute/Kick)")
+                .addOptions(
+                        new OptionData(OptionType.STRING, "player", "Minecraft Name", true),
+                        new OptionData(OptionType.STRING, "type", "Type", true).addChoice("Ban", "BAN").addChoice("Mute", "MUTE").addChoice("Kick", "KICK"),
+                        new OptionData(OptionType.STRING, "reason", "Reason", true),
+                        new OptionData(OptionType.STRING, "duration", "Duration (e.g. 1d, 12h) [Optional for Ban/Mute]", false)
                 );
 
-        CommandData languageCmd = Commands.slash("language", "Set your primary language for server messages")
-                .addOptions(new OptionData(OptionType.STRING, "choice", "Select your language", true)
-                        .addChoice("Deutsch", "DE")
-                        .addChoice("English", "EN"));
+        CommandData clearCmd = Commands.slash("clear", "Bulk delete messages").addOptions(new OptionData(OptionType.INTEGER, "amount", "Number of messages", true));
+        CommandData kickCmd = Commands.slash("kick", "Kick a Discord user").addOptions(new OptionData(OptionType.USER, "user", "User", true), new OptionData(OptionType.STRING, "reason", "Reason", false));
+        CommandData timeoutCmd = Commands.slash("timeout", "Timeout a Discord user").addOptions(new OptionData(OptionType.USER, "user", "User", true), new OptionData(OptionType.STRING, "duration", "Duration", true), new OptionData(OptionType.STRING, "reason", "Reason", false));
+        CommandData announceCmd = Commands.slash("announce", "Send an announcement").addOptions(new OptionData(OptionType.STRING, "message", "The message", true), new OptionData(OptionType.CHANNEL, "channel", "Channel", false));
 
+        // Utility
+        CommandData ipCmd = Commands.slash("ip", "Show Server IP");
+        CommandData helpCmd = Commands.slash("help", "Show command list");
+        CommandData pingCmd = Commands.slash("ping", "Bot Latency");
+        CommandData suggestCmd = Commands.slash("suggest", "Submit a suggestion").addOptions(new OptionData(OptionType.STRING, "idea", "Your suggestion", true));
+        CommandData feedbackCmd = Commands.slash("feedback", "Send feedback").addOptions(new OptionData(OptionType.STRING, "text", "Your feedback", true));
+        CommandData tutorialCmd = Commands.slash("tutorial", "How to join Lythrion");
+
+        CommandData leaderCmd = Commands.slash("leaderboard", "Show Lythrion Level Leaderboard");
+        CommandData groupCmd = Commands.slash("group", "Show MurmelAPI group info").addOptions(new OptionData(OptionType.STRING, "name", "The group name", true));
+        CommandData languageCmd = Commands.slash("language", "Change bot language").addOptions(new OptionData(OptionType.STRING, "choice", "Select language", true).addChoice("English", "english").addChoice("Deutsch", "deutsch"));
 
         jda.updateCommands()
                 .addCommands(
-                        statusCmd,
-                        maintenanceCmd,
-                        botInfoCmd,
-                        profileCmd,
-                        latencyCmd,
-                        ticketPanelCmd,
-                        rpsCmd,
-                        rollCmd,
-                        groupCmd,
-                        punishmentCmd,
-                        languageCmd
+                        statusCmd, maintenanceCmd, botInfoCmd, profileCmd, latencyCmd,
+                        ticketCmd, rpsCmd, rollCmd, punishCmd, clearCmd, kickCmd, timeoutCmd,
+                        announceCmd, ipCmd, helpCmd, pingCmd, suggestCmd, feedbackCmd,
+                        tutorialCmd, leaderCmd, groupCmd, languageCmd
                 )
                 .queue();
 
-        // ---- Listener ----
+        // --- 6. Listener Registrierung ---
         jda.addEventListener(new CommandListener(
                 jda,
                 statusService,
@@ -209,7 +203,8 @@ public final class LythrionBot {
                 userService,
                 playTimeProvider,
                 punishmentCurrentUserProvider,
-                languageService
+                languageService,
+                syntrixRepo
         ));
 
         System.out.println("Lythrion main bot is running.");

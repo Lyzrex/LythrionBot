@@ -8,7 +8,6 @@ import java.io.FileWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
-
 public final class ConfigManager {
 
     private static Map<String, Object> root;
@@ -31,22 +30,28 @@ public final class ConfigManager {
     private static void writeDefaultConfig(File file) throws Exception {
         String yaml = """
                 bot:
-                  version: "0.0.2-beta1.13"
+                  version: "0.0.3-release"
+                  status_channel_id: "0"
 
                 network:
                   name: "Lythrion Network"
                   ip: "Lythrion.net"
                   icon: "https://api.mcstatus.io/v2/icon/lythrion.net"
                   discord: "https://discord.gg/yourInvite"
-                  website: "https://example.com"
-                  store: "https://store.example.com"
-                  docs: "https://docs.example.com"
+                  website: "https://lythrion.net"
+                  store: "https://store.lythrion.net"
+                  docs: "https://wiki.lythrion.net"
+
+                channels:
+                  welcome: "0"
+                  suggestions: "0"
+                  feedback: "0"
+                  announcements: "0"
 
                 maintenance:
                   main: false
                   lobby: false
                   citybuild: false
-
 
                 murmelapi:
                   base_url: "https://murmelmeister.github.io/MurmelAPI"
@@ -56,6 +61,8 @@ public final class ConfigManager {
                   categoryId: "0"
                   staffRoleId: "0"
                   logChannelId: "0"
+                  panelDescription: "Create a ticket for support, reports or appeals."
+                  welcomeMessage: "Support will be with you shortly."
 
                 moderation:
                   logChannelId: "0"

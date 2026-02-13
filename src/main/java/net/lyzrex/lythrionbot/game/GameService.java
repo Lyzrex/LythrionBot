@@ -19,9 +19,9 @@ public class GameService {
     private final Random random = new Random();
     private long virtualBalance = 1000; // SIMULIERTE BALANCE FÜR DAS WÜRFELSPIEL
 
-    public GameService(GameScoreRepository repo) {
+    public GameService(GameScoreRepository repo, UserProvider userProvider) {
         this.repo = repo;
-        this.userProvider = userProvider;
+        this.userProvider = this.userProvider;
     }
 
     // Hilfsfunktion zum Abrufen von MurmelAPI MessageService
