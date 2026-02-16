@@ -21,6 +21,7 @@ import net.lyzrex.lythrionbot.profile.UserProfileRepository;
 import net.lyzrex.lythrionbot.status.MaintenanceManager;
 import net.lyzrex.lythrionbot.status.StatusService;
 import net.lyzrex.lythrionbot.ticket.TicketService;
+import net.lyzrex.lythrionbot.listener.JoinListener; // Neu hinzugefügt
 
 import de.murmelmeister.murmelapi.MurmelAPI;
 import de.murmelmeister.murmelapi.punishment.PunishmentService;
@@ -114,7 +115,7 @@ public final class LythrionBot {
         JDABuilder builder = JDABuilder.createDefault(token)
                 .enableIntents(
                         GatewayIntent.GUILD_MESSAGES,
-                        GatewayIntent.GUILD_MEMBERS,
+                        GatewayIntent.GUILD_MEMBERS, // Notwendig für Join-Events
                         GatewayIntent.MESSAGE_CONTENT
                 )
                 .setStatus(OnlineStatus.ONLINE)
@@ -206,6 +207,9 @@ public final class LythrionBot {
                 languageService,
                 syntrixRepo
         ));
+
+
+        jda.addEventListener(new JoinListener());
 
         System.out.println("Lythrion main bot is running.");
     }
