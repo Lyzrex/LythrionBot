@@ -21,7 +21,7 @@ import net.lyzrex.lythrionbot.profile.UserProfileRepository;
 import net.lyzrex.lythrionbot.status.MaintenanceManager;
 import net.lyzrex.lythrionbot.status.StatusService;
 import net.lyzrex.lythrionbot.ticket.TicketService;
-import net.lyzrex.lythrionbot.listener.JoinListener; // Neu hinzugefügt
+import net.lyzrex.lythrionbot.listener.JoinListener;
 
 import de.murmelmeister.murmelapi.MurmelAPI;
 import de.murmelmeister.murmelapi.punishment.PunishmentService;
@@ -79,14 +79,12 @@ public final class LythrionBot {
         }
 
         // --- 3. Abhängigkeiten (Services & Repositories) ---
-
         Database murmelDatabase = MurmelAPI.getDatabase();
-        DatabaseManager databaseManager = new DatabaseManager(); // Wrapper
+        DatabaseManager databaseManager = new DatabaseManager();
 
         MaintenanceManager maintenanceManager = new MaintenanceManager();
         StatusService statusService = new StatusService(maintenanceManager);
 
-        // MurmelAPI Providers
         UserProvider userProvider = MurmelAPI.getUserProvider();
         PunishmentCurrentUserProvider punishmentCurrentUserProvider = MurmelAPI.getPunishmentCurrentUserProvider();
         PunishmentService punishmentService = MurmelAPI.getPunishmentService();
@@ -95,14 +93,11 @@ public final class LythrionBot {
         UserService userService = MurmelAPI.getUserService();
         UserPlayTimeProvider playTimeProvider = MurmelAPI.getUserPlayTimeProvider();
 
-        // Custom Services
         UserProfileRepository userRepo = new UserProfileRepository(murmelDatabase);
         SyntrixRepository syntrixRepo = new SyntrixRepository(murmelDatabase);
         GameScoreRepository gameScoreRepo = new GameScoreRepository(murmelDatabase);
 
-        // HIER WIRD DER LANGUAGE SERVICE ERSTELLT (mit userProvider)
         LanguageService languageService = new LanguageService(userProvider);
-
         GameService gameService = new GameService(gameScoreRepo, userProvider);
 
         TicketService ticketService = new TicketService(
@@ -115,7 +110,7 @@ public final class LythrionBot {
         JDABuilder builder = JDABuilder.createDefault(token)
                 .enableIntents(
                         GatewayIntent.GUILD_MESSAGES,
-                        GatewayIntent.GUILD_MEMBERS, // Notwendig für Join-Events
+                        GatewayIntent.GUILD_MEMBERS,
                         GatewayIntent.MESSAGE_CONTENT
                 )
                 .setStatus(OnlineStatus.ONLINE)
@@ -153,7 +148,15 @@ public final class LythrionBot {
                 );
         CommandData rollCmd = Commands.slash("roll", "Roll a dice and bet against the bot").addOptions(new OptionData(OptionType.INTEGER, "betrag", "The amount you want to bet", true));
 
-        // Admin
+        // NEUER EMBED COMMAND
+        CommandData embedCmd = Commands.slash("embed", "Sendet ein benutzerdefiniertes Embed in diesen Kanal")
+                .addOptions(
+                        new OptionData(OptionType.STRING, "titel", "Der Titel des Embeds", true),
+                        new OptionData(OptionType.STRING, "beschreibung", "Der Inhalt (nutze \\n für Zeilenumbrüche)", true),
+                        new OptionData(OptionType.STRING, "farbe", "Hex-Farbe (z.B. #2ecc71)", false)
+                );
+
+        // Admin Moderation etc.
         CommandData punishCmd = Commands.slash("punish", "Punish a Minecraft player (Ban/Mute/Kick)")
                 .addOptions(
                         new OptionData(OptionType.STRING, "player", "Minecraft Name", true),
@@ -184,7 +187,7 @@ public final class LythrionBot {
                         statusCmd, maintenanceCmd, botInfoCmd, profileCmd, latencyCmd,
                         ticketCmd, rpsCmd, rollCmd, punishCmd, clearCmd, kickCmd, timeoutCmd,
                         announceCmd, ipCmd, helpCmd, pingCmd, suggestCmd, feedbackCmd,
-                        tutorialCmd, leaderCmd, groupCmd, languageCmd
+                        tutorialCmd, leaderCmd, groupCmd, languageCmd, embedCmd
                 )
                 .queue();
 
@@ -207,7 +210,6 @@ public final class LythrionBot {
                 languageService,
                 syntrixRepo
         ));
-
 
         jda.addEventListener(new JoinListener());
 

@@ -183,6 +183,7 @@ public class TicketService {
                 });
     }
 
+
     // close + transcript
     public void handleCloseButton(ButtonInteractionEvent event) {
         if (!CLOSE_ID.equals(event.getComponentId())) {
@@ -273,6 +274,7 @@ public class TicketService {
             textChannel.delete().queueAfter(5, TimeUnit.SECONDS);
         });
     }
+
 
     private String buildTranscript(TextChannel channel, List<Message> messages) {
         StringBuilder sb = new StringBuilder();

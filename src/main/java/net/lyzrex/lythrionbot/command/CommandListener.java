@@ -40,6 +40,7 @@ import de.murmelmeister.murmelapi.user.playtime.UserPlayTimeProvider;
 import de.murmelmeister.murmelapi.MurmelAPI;
 import de.murmelmeister.murmelapi.utils.TimeUtil;
 
+import java.awt.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
@@ -618,7 +619,31 @@ public class CommandListener extends ListenerAdapter {
         if (g == null) event.reply("❌ Group not found.").setEphemeral(true).queue();
         else event.reply("Group: " + g.groupName() + " (ID: " + g.id() + ")").setEphemeral(true).queue();
     }
+    private void handleEmbed(SlashCommandInteractionEvent event, boolean admin) {
+        if (!admin) {
+            event.reply("❌ Only administrators are allowed to create embeds.").setEphemeral(true).queue();
+            return;
+        }
 
+        String title = event.getOption("title").getAsString();
+        // Ersetzt eingegebene \n durch echte Zeilenumbrüche für die Formatierung
+        String description = event.getOption("description").getAsString().replace("\\n", "\n");
+        String colorHex = event.getOption("color") != null ? event.getOption("color").getAsString() : "#22c55e";
+
+        try {
+            EmbedBuilder eb = new EmbedBuilder()
+                    .setTitle(title)
+                    .setDescription(description)
+                    .setColor(Color.decode(colorHex))
+                    .setFooter("Lythrion Network")
+                    .setTimestamp(Instant.now());
+
+            event.getChannel().sendMessageEmbeds(eb.build()).queue();
+            event.reply("✅ Embed has been sent!").setEphemeral(true).queue();
+        } catch (Exception e) {
+            event.reply("❌ Invalid color hex code (use e.g., #ffffff).").setEphemeral(true).queue();
+        }
+    }
     private void handleLanguage(SlashCommandInteractionEvent event) {
         String choice = event.getOption("choice").getAsString();
         Optional<Language> targetLang = Language.fromString(choice);
