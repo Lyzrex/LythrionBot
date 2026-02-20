@@ -5,6 +5,7 @@ import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.dv8tion.jda.api.entities.UserSnowflake;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.emoji.Emoji;
 import net.dv8tion.jda.api.events.guild.member.GuildMemberJoinEvent;
@@ -23,6 +24,7 @@ import net.lyzrex.lythrionbot.ticket.TicketService;
 import net.lyzrex.lythrionbot.game.GameService;
 import net.lyzrex.lythrionbot.i18n.Language;
 import net.lyzrex.lythrionbot.language.LanguageService;
+
 
 import de.murmelmeister.murmelapi.group.Group;
 import de.murmelmeister.murmelapi.group.GroupProvider;
@@ -527,6 +529,8 @@ public class CommandListener extends ListenerAdapter {
                     }
                 }
 
+
+
                 // Random ID Generation to prevent duplicates
                 int reasonId = (int) (System.currentTimeMillis() / 1000) + ThreadLocalRandom.current().nextInt(1000, 9999);
 
@@ -564,11 +568,134 @@ public class CommandListener extends ListenerAdapter {
         });
     }
 
-    // --- OTHER HANDLERS ---
+    public void checkPendingVerifications() {
+        String channelId = "1474181492098732275";
+        String roleId = "1474181547350425641";
+
+        TextChannel channel = jda.getTextChannelById(channelId);
+        if (channel == null) return;
+
+        // Fetch pending requests from the database where discord_id is not yet set
+        databaseManager.getDatabase().queryList(
+                "SELECT v.discord_name, v.verify_code, u.username FROM discord_verify v JOIN users u ON v.user_id = u.id WHERE v.discord_id IS NULL",
+                rs -> {
+                    String dName = rs.getString("discord_name");
+                    String code = rs.getString("verify_code");
+                    String mcName = rs.getString("username");
+
+                    // Search user cache for the Discord name
+                    List<net.dv8tion.jda.api.entities.User> users = jda.getUsersByName(dName, true);
+
+                    if (!users.isEmpty()) {
+                        net.dv8tion.jda.api.entities.User dUser = users.get(0);
+
+                        // --- CHECK: Is this Discord ID or Minecraft ID already verified? ---
+                        boolean isAlreadyLinked = databaseManager.getDatabase().exists(
+                                "SELECT 1 FROM discord_verify WHERE (discord_id = ? OR discord_name = ?) AND verified = TRUE",
+                                s -> {
+                                    s.setString(1, dUser.getId());
+                                    s.setString(2, dName);
+                                });
+
+                        if (isAlreadyLinked) {
+                            // Cancel the request if already linked
+                            databaseManager.getDatabase().update("DELETE FROM discord_verify WHERE verify_code = ?", s -> s.setString(1, code));
+                            return null;
+                        }
+
+                        EmbedBuilder eb = new EmbedBuilder()
+                                .setTitle("🔐 Account Verification")
+                                .setColor(0x2ecc71)
+                                .setThumbnail("https://mc-heads.net/avatar/" + mcName)
+                                .setDescription("Hello " + dUser.getAsMention() + "!\n\nYou started a verification for: **" + mcName + "**.")
+                                .addField("Your Code", "```/link " + code + "```", false)
+                                .setFooter("Use this command in Minecraft to receive your 10,000$ reward!");
+
+                        // Send message to the channel (Ping user)
+                        channel.sendMessage(dUser.getAsMention()).setEmbeds(eb.build()).queue();
+
+                        // Update database with the confirmed Discord ID
+                        databaseManager.getDatabase().update("UPDATE discord_verify SET discord_id = ? WHERE verify_code = ?", s -> {
+                            s.setString(1, dUser.getId());
+                            s.setString(2, code);
+                        });
+
+                        // Assign the verification role to the user
+                        channel.getGuild().addRoleToMember(UserSnowflake.fromId(dUser.getId()), channel.getGuild().getRoleById(roleId)).queue();
+                    }
+                    return true;
+                },
+                null
+        );
+    }
+
+    private void sendVerificationEmbed(net.dv8tion.jda.api.entities.User dUser, String mcName, String code, TextChannel channel, String roleId) {
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("🔐 Account Verification")
+                .setColor(0x2ecc71)
+                .setThumbnail("https://mc-heads.net/avatar/" + mcName)
+                .setDescription("Hello " + dUser.getAsMention() + "!\n\nYou started verification for: **" + mcName + "**")
+                .addField("Your Code", "```/link " + code + "```", false)
+                .setFooter("Type this command in Minecraft to receive your 10,000$ reward!");
+
+        // 1. Nachricht in den Kanal senden (für den Nutzer sichtbar durch Ping)
+        channel.sendMessage(dUser.getAsMention() + " check your verification code below:")
+                .setEmbeds(eb.build())
+                .queue();
+
+        // 2. Optional: Code zusätzlich per DM senden, damit er privat bleibt
+        dUser.openPrivateChannel().queue(pc -> pc.sendMessageEmbeds(eb.build()).queue(null, err -> {
+            // Falls DMs aus sind, wurde es bereits im Kanal gepostet
+        }));
+
+        // Datenbank-Update und Rolle vergeben (IDs aus deinen Screenshots)
+        databaseManager.getDatabase().update("UPDATE discord_verify SET discord_id = ? WHERE verify_code = ?", s -> {
+            s.setString(1, dUser.getId());
+            s.setString(2, code);
+        });
+
+        // Rolle 1474181547350425641 vergeben
+        channel.getGuild().addRoleToMember(UserSnowflake.fromId(dUser.getId()),
+                channel.getGuild().getRoleById(roleId)).queue();
+    }
+
+    private static String extractDiscordId(String raw) {
+        String value = raw.trim();
+        String digitsOnly = value.replaceAll("\\D", "");
+        if (!digitsOnly.isBlank() && digitsOnly.length() >= 17) {
+            return digitsOnly;
+        }
+        return null;
+    }
+
+    private void handlePendingVerification(Member member, String mcName, String code, TextChannel channel, net.dv8tion.jda.api.entities.Role role) {
+        var dUser = member.getUser();
+
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("🔐 Verification Request")
+                .setColor(0x2ecc71)
+                .setDescription("Hello " + dUser.getAsMention() + "!\n\nYou requested verification for Minecraft account: **" + mcName + "**")
+                .addField("Instruction", "Please type the following command in Minecraft:", false)
+                .addField("Command", "`/link " + code + "`", false)
+                .setFooter("Lythrion Security");
+
+        channel.sendMessage(dUser.getAsMention()).setEmbeds(eb.build()).queue();
+
+        databaseManager.getDatabase().update("UPDATE discord_verify SET discord_id = ? WHERE verify_code = ?", s -> {
+            s.setString(1, dUser.getId());
+            s.setString(2, code);
+        });
+
+        channel.getGuild().addRoleToMember(member, role).queue(
+                success -> System.out.println("Role added to " + dUser.getName()),
+                error -> System.err.println("Failed to add role: " + error.getMessage())
+        );
+    }
 
     private void handleStatus(SlashCommandInteractionEvent event) {
         long start = System.currentTimeMillis();
         event.deferReply().queue();
+
 
         CompletableFuture<ServiceStatus> mainF = CompletableFuture.supplyAsync(statusService::fetchMainStatus);
         CompletableFuture<ServiceStatus> lobF = CompletableFuture.supplyAsync(statusService::fetchLobbyStatus);

@@ -214,5 +214,22 @@ public final class LythrionBot {
         jda.addEventListener(new JoinListener());
 
         System.out.println("Lythrion main bot is running.");
+// Create the CommandListener instance with all required dependencies
+        CommandListener cmdListener = new CommandListener(
+                jda, statusService, maintenanceManager, ticketService,
+                userRepo, databaseManager, gameService, punishmentService,
+                groupProvider, punishmentLogProvider, userProvider,
+                userService, playTimeProvider, punishmentCurrentUserProvider,
+                languageService, syntrixRepo
+        );
+
+        // Register the listener to handle slash commands
+        jda.addEventListener(cmdListener);
+
+
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(
+                cmdListener::checkPendingVerifications,
+                5, 5, java.util.concurrent.TimeUnit.SECONDS
+        );
     }
 }

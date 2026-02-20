@@ -111,10 +111,16 @@ public class SlashCommandListener extends ListenerAdapter {
             case "roll" -> handleRoll(event);
             case "group" -> handleGroup(event, admin);
             case "punishment" -> handlePunishment(event, admin);
+            case "embed" -> handleEmbed(event, admin);
+
+
             default -> {
                 // ignore unknown
             }
         }
+    }
+
+    private void handleEmbed(SlashCommandInteractionEvent event, boolean admin) {
     }
 
     /* ====================================================================== */
@@ -122,43 +128,7 @@ public class SlashCommandListener extends ListenerAdapter {
     /* ====================================================================== */
 
     private void handleStatus(SlashCommandInteractionEvent event, boolean admin, Member member) {
-        long start = System.currentTimeMillis();
-        event.deferReply().queue();
-
-        // HTTP-Abfragen parallel holen
-        CompletableFuture<ServiceStatus> mainFuture =
-                CompletableFuture.supplyAsync(statusService::fetchMainStatus);
-        CompletableFuture<ServiceStatus> lobbyFuture =
-                CompletableFuture.supplyAsync(statusService::fetchLobbyStatus);
-        CompletableFuture<ServiceStatus> cbFuture =
-                CompletableFuture.supplyAsync(statusService::fetchCitybuildStatus);
-
-        CompletableFuture.allOf(mainFuture, lobbyFuture, cbFuture)
-                .orTimeout(10, TimeUnit.SECONDS)
-                .whenComplete((ignored, throwable) -> {
-                    if (throwable != null) {
-                        event.getHook()
-                                .editOriginal("❌ Failed to fetch network status (timeout).")
-                                .queue();
-                        return;
-                    }
-
-                    ServiceStatus main = mainFuture.join();
-                    ServiceStatus lobby = lobbyFuture.join();
-                    ServiceStatus citybuild = cbFuture.join();
-
-                    statusService.updatePresenceFromData(jda, main, lobby, citybuild);
-                    MessageEmbed embed = statusService.buildStatusEmbed(main, lobby, citybuild);
-
-                    long dur = System.currentTimeMillis() - start;
-                    event.getHook().editOriginalEmbeds(embed).queue();
-
-                    if (admin) {
-                        sendDebugDm(member,
-                                "🧪 Debug `/status`\n" +
-                                        "Exec time: " + dur + "ms");
-                    }
-                });
+        
     }
 
     /* ====================================================================== */

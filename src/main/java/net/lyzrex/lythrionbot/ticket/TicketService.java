@@ -85,6 +85,7 @@ public class TicketService {
     // category select -> create ticket
     public void handleCategorySelect(StringSelectInteractionEvent event) {
         if (!MENU_ID.equals(event.getComponentId())) {
+
             return;
         }
 
