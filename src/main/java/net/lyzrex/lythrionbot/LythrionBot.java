@@ -4,6 +4,10 @@ import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.OnlineStatus;
 import net.dv8tion.jda.api.entities.Activity;
+import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.Role;
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
+import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.CommandData;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
@@ -34,7 +38,11 @@ import de.murmelmeister.murmelapi.user.playtime.UserPlayTimeProvider;
 import de.murmelmeister.library.database.Database;
 
 import java.io.InputStream;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
 public final class LythrionBot {
 
@@ -148,7 +156,6 @@ public final class LythrionBot {
                 );
         CommandData rollCmd = Commands.slash("roll", "Roll a dice and bet against the bot").addOptions(new OptionData(OptionType.INTEGER, "betrag", "The amount you want to bet", true));
 
-        // NEUER EMBED COMMAND
         CommandData embedCmd = Commands.slash("embed", "Sendet ein benutzerdefiniertes Embed in diesen Kanal")
                 .addOptions(
                         new OptionData(OptionType.STRING, "titel", "Der Titel des Embeds", true),
@@ -156,7 +163,6 @@ public final class LythrionBot {
                         new OptionData(OptionType.STRING, "farbe", "Hex-Farbe (z.B. #2ecc71)", false)
                 );
 
-        // Admin Moderation etc.
         CommandData punishCmd = Commands.slash("punish", "Punish a Minecraft player (Ban/Mute/Kick)")
                 .addOptions(
                         new OptionData(OptionType.STRING, "player", "Minecraft Name", true),
@@ -170,7 +176,6 @@ public final class LythrionBot {
         CommandData timeoutCmd = Commands.slash("timeout", "Timeout a Discord user").addOptions(new OptionData(OptionType.USER, "user", "User", true), new OptionData(OptionType.STRING, "duration", "Duration", true), new OptionData(OptionType.STRING, "reason", "Reason", false));
         CommandData announceCmd = Commands.slash("announce", "Send an announcement").addOptions(new OptionData(OptionType.STRING, "message", "The message", true), new OptionData(OptionType.CHANNEL, "channel", "Channel", false));
 
-        // Utility
         CommandData ipCmd = Commands.slash("ip", "Show Server IP");
         CommandData helpCmd = Commands.slash("help", "Show command list");
         CommandData pingCmd = Commands.slash("ping", "Bot Latency");
@@ -192,29 +197,6 @@ public final class LythrionBot {
                 .queue();
 
         // --- 6. Listener Registrierung ---
-        jda.addEventListener(new CommandListener(
-                jda,
-                statusService,
-                maintenanceManager,
-                ticketService,
-                userRepo,
-                databaseManager,
-                gameService,
-                punishmentService,
-                groupProvider,
-                punishmentLogProvider,
-                userProvider,
-                userService,
-                playTimeProvider,
-                punishmentCurrentUserProvider,
-                languageService,
-                syntrixRepo
-        ));
-
-        jda.addEventListener(new JoinListener());
-
-        System.out.println("Lythrion main bot is running.");
-// Create the CommandListener instance with all required dependencies
         CommandListener cmdListener = new CommandListener(
                 jda, statusService, maintenanceManager, ticketService,
                 userRepo, databaseManager, gameService, punishmentService,
@@ -223,9 +205,70 @@ public final class LythrionBot {
                 languageService, syntrixRepo
         );
 
-        // Register the listener to handle slash commands
         jda.addEventListener(cmdListener);
+        jda.addEventListener(new JoinListener());
 
+        // --- 7. Discord Message Listener für Verification ---
+        // Dies ersetzt das JavaScript! Der Bot liest jetzt Java-basiert den Chat mit.
+        jda.addEventListener(new ListenerAdapter() {
+            @Override
+            public void onMessageReceived(MessageReceivedEvent event) {
+                // Konfiguriere hier deine IDs!
+                final String VERIFY_CHANNEL_ID = "1474181492098732275";
+                final String VERIFIED_ROLE_ID = "1474181547350425641";
+
+                if (event.getAuthor().isBot()) return;
+                if (!event.getChannel().getId().equals(VERIFY_CHANNEL_ID)) return;
+
+                String code = event.getMessage().getContentRaw().trim();
+
+                // Nachricht sofort löschen
+                event.getMessage().delete().queue(null, e -> {});
+
+                if (code.length() != 5 || !code.matches("\\d+")) {
+                    event.getChannel().sendMessage(event.getAuthor().getAsMention() + ", invalid code format!")
+                            .queue(msg -> msg.delete().queueAfter(5, TimeUnit.SECONDS));
+                    return;
+                }
+
+                // Check in Database
+                boolean isValid = MurmelAPI.getDatabase().exists(
+                        "SELECT 1 FROM discord_verify WHERE verify_code = ? AND verified = FALSE",
+                        s -> s.setString(1, code)
+                );
+
+                if (!isValid) {
+                    event.getChannel().sendMessage(event.getAuthor().getAsMention() + ", this code is invalid or already used!")
+                            .queue(msg -> msg.delete().queueAfter(5, TimeUnit.SECONDS));
+                    return;
+                }
+
+                // Update Database
+                MurmelAPI.getDatabase().update(
+                        "UPDATE discord_verify SET verified = TRUE, discord_id = ?, discord_name = ? WHERE verify_code = ?",
+                        s -> {
+                            s.setString(1, event.getAuthor().getId());
+                            s.setString(2, event.getAuthor().getName());
+                            s.setString(3, code);
+                        }
+                );
+
+                // Rolle geben
+                Member member = event.getMember();
+                if (member != null) {
+                    Role verifiedRole = event.getGuild().getRoleById(VERIFIED_ROLE_ID);
+                    if (verifiedRole != null) {
+                        event.getGuild().addRoleToMember(member, verifiedRole).queue();
+                    }
+                }
+
+                // Success Message
+                event.getChannel().sendMessage(event.getAuthor().getAsMention() + ", you have been successfully verified! Your ingame reward is on its way.")
+                        .queue(msg -> msg.delete().queueAfter(5, TimeUnit.SECONDS));
+            }
+        });
+
+        System.out.println("Lythrion main bot is running.");
 
         java.util.concurrent.Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(
                 cmdListener::checkPendingVerifications,
